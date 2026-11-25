@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run checks
+        run: make check
+
+  package-deb:
+    name: DEB package
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build DEB
+        run: packaging/build-deb.sh 0.1.0 dist
+      - name: Install and smoke test DEB
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ./dist/opensst_0.1.0_all.deb
+          sst --help
+      - name: Upload DEB artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: opensst-deb
+          path: dist/*.deb
+          retention-days: 7
+
+  package-rpm:
+    name: RPM package
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install RPM tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm
+      - name: Build RPM
+        run: packaging/build-rpm.sh 0.1.0 dist
+      - name: Install and smoke test RPM in Fedora
+        run: |
+          docker run --rm -v "$PWD/dist:/dist:ro" fedora:latest \
+            bash -c 'dnf install -y /dist/opensst-0.1.0-1.noarch.rpm && sst --help'
+      - name: Upload RPM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: opensst-rpm
+          path: dist/*.rpm
+          retention-days: 7
