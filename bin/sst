@@ -96,9 +96,70 @@ _sst_validate_ssh() {
   return 0
 }
 
+_sst_error() {
+  printf 'sst: %s\n' "$1" >&2
+}
+
+_sst_require_ssh() {
+  if ! command -v ssh >/dev/null 2>&1; then
+    _sst_error 'ssh not found in PATH; install an OpenSSH client'
+    return 127
+  fi
+}
+
+_sst_ssh() {
+  command ssh "$@"
+}
+
+# Build the complete remote command from a validated project name.
+_sst_remote_command() {
+  local operation=$1 project=${2-} action
+  case $operation in
+    list) action='exec tmux list-sessions' ;;
+    kill) action="exec tmux kill-session -t =$project" ;;
+    open) action="exec tmux new-session -A -D -s $project" ;;
+    *) return 1 ;;
+  esac
+  printf '%s\n' \
+    "command -v tmux >/dev/null 2>&1 || { printf '%s\\n' 'sst: remote tmux not found; install tmux or add it to PATH' >&2; exit 127; }; $action"
+}
+
+_sst_cmd_list() {
+  _sst_require_ssh || return 127
+  if ! _sst_validate_ssh "$@"; then
+    _sst_error 'invalid SSH arguments; supply options and exactly one host'
+    return 2
+  fi
+  _sst_ssh -T "$@" "$(_sst_remote_command list)"
+}
+
+_sst_cmd_kill() {
+  if (( $# < 2 )); then
+    _sst_error 'kill requires a host and a project'
+    return 2
+  fi
+  _sst_require_ssh || return 127
+  local project=${!#}
+  if ! _sst_valid_project "$project"; then
+    _sst_error 'invalid project name; use letters, digits, _ and -, starting with a letter or digit'
+    return 2
+  fi
+  local -a argv=("${@:1:$#-1}")
+  if ! _sst_validate_ssh "${argv[@]}"; then
+    _sst_error 'invalid SSH arguments; supply options and exactly one host'
+    return 2
+  fi
+  _sst_ssh -T "${argv[@]}" "$(_sst_remote_command kill "$project")"
+}
+
 _sst_main() {
-  case ${1-} in
+  local cmd=${1-}
+  shift || true
+  case $cmd in
     -h|--help) _sst_usage ;;
+    list) _sst_cmd_list "$@" ;;
+    kill) _sst_cmd_kill "$@" ;;
+    open) _sst_usage >&2; return 2 ;;
     '') _sst_usage >&2; return 2 ;;
     *) _sst_usage >&2; return 2 ;;
   esac

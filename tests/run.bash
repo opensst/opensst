@@ -92,6 +92,7 @@ test_usage_errors() {
 
 FAKEBIN="$ROOT/tests/fixtures/bin"
 GLOG="$TMP/ssh-g.log"
+CLOG="$TMP/ssh-connection.log"
 
 run_sourced() {
   local func=$1
@@ -178,11 +179,106 @@ test_ssh_validation_rejects() {
   assert_eq "$STATUS" 1 "ssh -G failure is rejected"
 }
 
+run_sst_env() {
+  local exit_code=$1 exec_remote=$2
+  shift 2
+  : >"$TMP/stdout"
+  : >"$TMP/stderr"
+  : >"$CLOG"
+  : >"$GLOG"
+  PATH="$FAKEBIN:$PATH" \
+    FAKE_SSH_LOG="$CLOG" \
+    FAKE_SSH_G_LOG="$GLOG" \
+    FAKE_SSH_EXIT="$exit_code" \
+    FAKE_SSH_EXEC_REMOTE="$exec_remote" \
+    "$SST" "$@" >"$TMP/stdout" 2>"$TMP/stderr"
+  STATUS=$?
+  OUTPUT=$(<"$TMP/stdout")
+  ERROR=$(<"$TMP/stderr")
+}
+
+run_sst() {
+  run_sst_env 0 0 "$@"
+}
+
+connection_count() {
+  if [[ -f $CLOG ]]; then
+    wc -l <"$CLOG" | tr -d ' '
+  else
+    printf '0'
+  fi
+}
+
+test_list_and_kill() {
+  run_sst list -p 2222 devbox
+  assert_eq "$STATUS" 0 "list succeeds"
+  assert_file_contains "$CLOG" "-T -p 2222 devbox" "list uses ssh -T before host"
+  assert_file_contains "$CLOG" "list-sessions" "list runs tmux list-sessions"
+  assert_eq "$(connection_count)" 1 "list makes exactly one connection"
+
+  run_sst kill -p 2222 devbox Work
+  assert_eq "$STATUS" 0 "kill succeeds"
+  assert_file_contains "$CLOG" "-T -p 2222 devbox" "kill uses ssh -T before host"
+  assert_file_contains "$CLOG" "kill-session -t =Work" "kill targets the exact session name"
+  assert_eq "$(connection_count)" 1 "kill makes exactly one connection"
+
+  run_sst kill devbox 'Work;id'
+  assert_eq "$STATUS" 2 "kill rejects an unsafe project name"
+  assert_eq "$(connection_count)" 0 "rejected kill connects to nothing"
+
+  run_sst kill devbox
+  assert_eq "$STATUS" 2 "kill requires a distinct host and project"
+
+  run_sst list
+  assert_eq "$STATUS" 2 "list requires a host"
+
+  run_sst list devbox extra
+  assert_eq "$STATUS" 2 "list rejects a positional remote command"
+}
+
+test_management_never_retries() {
+  run_sst_env 255 0 list devbox
+  assert_eq "$STATUS" 255 "list returns ssh status 255 unchanged"
+  assert_eq "$(connection_count)" 1 "list does not retry on 255"
+
+  run_sst_env 255 0 kill devbox Work
+  assert_eq "$STATUS" 255 "kill returns ssh status 255 unchanged"
+  assert_eq "$(connection_count)" 1 "kill does not retry on 255"
+
+  assert_eq "$OUTPUT" "" "management commands emit no terminal reset on stdout"
+}
+
+test_missing_remote_tmux() {
+  run_sst_env 0 1 list devbox
+  assert_eq "$STATUS" 127 "list returns 127 when remote tmux is missing"
+  assert_contains "$ERROR" "install tmux" "list explains how to fix missing tmux"
+
+  run_sst_env 0 1 kill devbox Work
+  assert_eq "$STATUS" 127 "kill returns 127 when remote tmux is missing"
+  assert_contains "$ERROR" "install tmux" "kill explains how to fix missing tmux"
+}
+
+test_missing_local_ssh() {
+  : >"$TMP/stdout"
+  : >"$TMP/stderr"
+  env -i PATH=/nonexistent HOME="$TMP" /bin/bash "$SST" list devbox \
+    >"$TMP/stdout" 2>"$TMP/stderr"
+  STATUS=$?
+  OUTPUT=$(<"$TMP/stdout")
+  ERROR=$(<"$TMP/stderr")
+  assert_eq "$STATUS" 127 "missing local ssh returns 127"
+  assert_contains "$ERROR" "ssh" "missing local ssh is reported"
+}
+
 test_help
 test_usage_errors
 test_project_names
 test_ssh_validation_accepts
 test_ssh_validation_rejects
+test_list_and_kill
+test_management_never_retries
+test_missing_remote_tmux
+test_missing_local_ssh
 
 printf '\n%d tests, %d failures\n' "$tests" "$failures"
 (( failures == 0 ))
