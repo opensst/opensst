@@ -1186,7 +1186,10 @@ exit 1
 EOF
       chmod +x "$bindir/infocmp"
     fi
-    PATH="$bindir:/usr/bin:/bin" TERM="$term" \
+    # Only the fake tools are on PATH, so a missing fake infocmp really means
+    # no infocmp, regardless of what the host has installed.
+    shell=$(command -v "$shell")
+    PATH="$bindir" TERM="$term" \
       FAKE_INFOCMP_SUPPORTED="$supported" FAKE_TMUX_LOG="$log" \
       "$shell" -c "$remote"
   ) >"$TMP/stdout" 2>"$TMP/stderr"
