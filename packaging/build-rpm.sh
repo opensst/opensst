@@ -9,12 +9,19 @@ if [[ ! $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   exit 2
 fi
 
+root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+embedded=$(sed -n "s/^SST_VERSION='\([0-9.]*\)'$/\1/p" "$root/bin/sst" | head -n1) || embedded=''
+if [[ $embedded != "$version" ]]; then
+  printf 'build-rpm: version %s does not match bin/sst SST_VERSION %s\n' \
+    "$version" "${embedded:-unknown}" >&2
+  exit 2
+fi
+
 if ! command -v rpmbuild >/dev/null 2>&1; then
   printf 'build-rpm: rpmbuild not found; install rpm-build\n' >&2
   exit 127
 fi
 
-root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 mkdir -p "$outdir"
 outdir=$(cd -- "$outdir" && pwd)
 tmp=$(mktemp -d)
@@ -40,6 +47,7 @@ BuildArch: noarch
 
 Requires: bash
 Requires: openssh-clients
+Requires: curl
 
 %description
 OpenSST provides the sst command to open, list, and kill named remote

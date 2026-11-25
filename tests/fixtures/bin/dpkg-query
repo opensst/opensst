@@ -1,0 +1,31 @@
+#!/bin/bash
+# Fake dpkg-query for sst update tests.
+set -u
+
+if [[ ${1-} == -S ]]; then
+  path=${2-}
+  [[ ${path-} == -- ]] && path=${3-}
+  if [[ ${FAKE_DPKG_MULTI-} == 1 ]]; then
+    printf 'pkg-one: %s\npkg-two: %s\n' "$path" "$path"
+    exit 0
+  fi
+  if [[ -n ${FAKE_DPKG_OWNER-} ]]; then
+    printf '%s: %s\n' "$FAKE_DPKG_OWNER" "$path"
+    exit 0
+  fi
+  exit 1
+fi
+
+if [[ ${1-} == -W ]]; then
+  if [[ -n ${FAKE_PKG_STATE-} && -f ${FAKE_PKG_STATE-} ]]; then
+    cat "$FAKE_PKG_STATE"
+    exit 0
+  fi
+  if [[ -n ${FAKE_DPKG_INSTALLED_VERSION-} ]]; then
+    printf '%s\n' "$FAKE_DPKG_INSTALLED_VERSION"
+    exit 0
+  fi
+  exit 1
+fi
+
+exit 1

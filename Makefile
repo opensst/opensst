@@ -3,7 +3,7 @@ BINDIR ?= $(PREFIX)/bin
 DESTDIR ?=
 VERSION ?= 0.1.0
 
-.PHONY: test check install uninstall package-deb package-rpm
+.PHONY: test check install uninstall package-deb package-rpm package-arch
 
 test:
 	bash tests/run.bash
@@ -13,6 +13,8 @@ check:
 	bash -n tests/run.bash
 	bash -n packaging/build-deb.sh
 	bash -n packaging/build-rpm.sh
+	bash -n packaging/build-arch.sh
+	bash -n packaging/release-assets.sh
 	$(MAKE) test
 
 install:
@@ -28,3 +30,7 @@ package-deb:
 package-rpm:
 	mkdir -p dist
 	./packaging/build-rpm.sh "$(VERSION)" dist
+
+package-arch:
+	mkdir -p dist
+	./packaging/build-arch.sh "$(VERSION)" dist

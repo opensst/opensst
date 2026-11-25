@@ -1,0 +1,43 @@
+#!/bin/bash
+# Fake pacman for sst update tests.
+set -u
+
+case ${1-} in
+  -Qqo)
+    if [[ -n ${FAKE_PACMAN_OWNER-} ]]; then
+      printf '%s\n' "$FAKE_PACMAN_OWNER"
+      exit 0
+    fi
+    exit 1
+    ;;
+  -Q)
+    if [[ -n ${FAKE_PKG_STATE-} && -f ${FAKE_PKG_STATE-} ]]; then
+      printf 'opensst %s\n' "$(cat "$FAKE_PKG_STATE")"
+      exit 0
+    fi
+    if [[ -n ${FAKE_PACMAN_INSTALLED_VERSION-} ]]; then
+      printf 'opensst %s\n' "$FAKE_PACMAN_INSTALLED_VERSION"
+      exit 0
+    fi
+    exit 1
+    ;;
+  -Qip)
+    if [[ -n ${FAKE_PACMAN_ASSET_VERSION-} ]]; then
+      printf 'Name            : opensst\nVersion         : %s\n' "$FAKE_PACMAN_ASSET_VERSION"
+      exit 0
+    fi
+    exit 1
+    ;;
+  -U)
+    if [[ ${FAKE_PKG_FAIL-} == 1 ]]; then
+      exit 1
+    fi
+    if [[ -n ${FAKE_PKG_STATE-} ]]; then
+      printf '%s\n' "${FAKE_PKG_ASSET_VERSION-}" >"$FAKE_PKG_STATE"
+    fi
+    exit 0
+    ;;
+  *)
+    exit 1
+    ;;
+esac

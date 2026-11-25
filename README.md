@@ -15,8 +15,10 @@ it does not depend on Omarchy, Ghostty, Python, Mosh, autossh, or systemd.
 
 - `open`, `list`, and `kill` for named remote tmux sessions.
 - Automatic reconnect after a dropped interactive session.
-- Source installation, native DEB and RPM packages, and a single executable
-  Bash script with no runtime configuration file.
+- Explicit `sst update`, which detects the installation method and upgrades
+  through the matching package manager.
+- Source installation, native DEB, RPM, and pacman packages, and a single
+  executable Bash script with no runtime configuration file.
 - Exact session targeting and explicit rejection of unsafe SSH arguments.
 - A test suite that uses a fake SSH executable and never contacts a real host.
 
@@ -79,8 +81,8 @@ sudo apt install ./opensst_0.1.0_all.deb
 sst --help
 ```
 
-The package installs `/usr/bin/sst` and depends on `bash` and
-`openssh-client`. Remove it with `sudo apt remove opensst`.
+The package installs `/usr/bin/sst` and depends on `bash`, `openssh-client`,
+and `curl`. Remove it with `sudo apt remove opensst`.
 
 ### RPM package
 
@@ -91,12 +93,27 @@ sudo dnf install ./opensst-0.1.0-1.noarch.rpm
 sst --help
 ```
 
-The package installs `/usr/bin/sst` and depends on `bash` and
-`openssh-clients`. Remove it with `sudo dnf remove opensst`.
+The package installs `/usr/bin/sst` and depends on `bash`, `openssh-clients`,
+and `curl`. Remove it with `sudo dnf remove opensst`.
 
-DEB and RPM packages are release assets; this project does not host an apt or
-dnf repository. Package artifacts are architecture-independent (`all` /
-`noarch`), and SHA256 checksums are published next to them.
+### Arch package
+
+Download `opensst.pkg.tar.zst` (or the versioned
+`opensst-0.1.0-1-any.pkg.tar.zst`) from the same release page:
+
+```sh
+sudo pacman -U ./opensst.pkg.tar.zst
+sst --help
+```
+
+The package installs `/usr/bin/sst` and declares `bash`, `openssh`, and `curl`
+as dependencies. Remove it with `sudo pacman -R opensst`. Updates do not
+require archlinuxcn or an AUR helper; `sst update` downloads the current
+release package and installs it locally with `pacman -U`.
+
+DEB, RPM, and Arch packages are release assets; this project does not host an
+apt, dnf, or pacman repository. Package artifacts are architecture-independent
+(`all` / `noarch` / `any`), and SHA256 checksums are published next to them.
 
 ## Usage
 
@@ -104,7 +121,9 @@ dnf repository. Package artifacts are architecture-independent (`all` /
 sst open [ssh options] <host> <project>
 sst list [ssh options] <host>
 sst kill [ssh options] <host> <project>
+sst update [--check|--yes]
 sst --help
+sst --version
 ```
 
 Examples:
@@ -114,12 +133,16 @@ sst open devbox Work
 sst open -p 2222 -l duanhongyi devbox Work
 sst list devbox
 sst kill devbox Work
+sst update --check
+sst update
 ```
 
 SSH options are passed to `ssh` before the host, for example
 `sst open -p 2222 -J jump@example devbox Work`. The host must be the only
 positional SSH argument. Additional positional arguments, which SSH would
-treat as a remote command, are rejected.
+treat as a remote command, are rejected. The operation owns terminal
+allocation, so -t/-T are rejected: `open` uses a PTY and `list`/`kill` run
+without one.
 
 ### Project names
 
@@ -163,12 +186,63 @@ attached to the same session. Opening the same project from another terminal
 will therefore displace the earlier client. Use different project names for
 concurrent attachments.
 
+## Updating
+
+`sst --version` prints the embedded version. `sst update` checks the latest
+stable GitHub Release, verifies the asset checksum, prints the installed and
+latest versions, and asks before changing anything.
+
+```sh
+sst update --check   # report only; no writes and no sudo
+sst update           # ask, then upgrade through the matching method
+sst update --yes     # skip confirmation for scripts
+```
+
+Detection uses package ownership, not the operating system:
+
+| Installed from | Detected by | Upgrade command |
+|---|---|---|
+| DEB | `dpkg-query -S /usr/bin/sst` | `sudo dpkg -i opensst.deb` |
+| RPM | `rpm -qf --qf '%{NAME}' /usr/bin/sst` | `sudo rpm -Uvh opensst.rpm` |
+| pacman | `pacman -Qqo /usr/bin/sst` | `sudo pacman -U --noconfirm opensst.pkg.tar.zst` |
+| source | no package owns the file | atomic replacement, with `sudo` under `/usr/local` |
+
+The owning package must be named `opensst`. An executable owned by a different
+package, owned by multiple packages, or unowned under `/usr/bin/sst` is refused
+instead of being reclassified as a source installation.
+
+Source installs are replaced atomically and keep executable mode `0755`. If the
+new file fails `sst --version`, the previous file is restored. Package-managed
+files are never overwritten directly, so package ownership stays intact.
+
+Updates require explicit invocation; no other command checks for updates.
+`--check` and `--yes` are mutually exclusive. Without `--yes`, an update needs
+a terminal and exits 2 instead of blocking in scripts. An installation that is
+already current exits 0, and a latest release older than the installed version
+is never installed (no downgrade).
+
+Runtime requirements for updates are `curl or wget`, `sha256sum`, the owning
+package manager, and `sudo` for system installs.
+
+**Trust boundary:** assets come from the hard-coded
+`https://github.com/opensst/opensst/releases/latest/download/` channel over
+HTTPS. `SHA256SUMS` detects corruption and incomplete downloads.
+The checksums are not signatures and do not authenticate the publisher. A
+compromise of the GitHub release channel is a compromise of the update channel.
+
 ## Exit status
 
-- `0`: the remote command succeeded.
+- `0`: the command succeeded; for updates, also up to date, applied, declined,
+  or no downgrade performed.
+- `1`: an update failed because of a network, download, checksum, version
+  query, install, or post-install check error.
 - `2`: invalid usage, unsafe project name, ambiguous SSH arguments, an
-  unresolvable or unsafe SSH configuration, or `open` without a terminal.
-- `127`: local `ssh` is missing or remote `tmux` is missing.
+  unresolvable or unsafe SSH configuration, `open` without a terminal, an
+  unknown installation method, an unsupported source path, or `sst update`
+  without a terminal and without `--yes`.
+- `127`: a required local tool is missing: `ssh`, remote `tmux`, update
+  downloader (`curl` or `wget`), `sha256sum`, `sudo`, or the owning package
+  manager.
 - `255`: an SSH connection failure that did not qualify for reconnect; other
   SSH and remote-command statuses are returned unchanged.
 
@@ -181,6 +255,8 @@ concurrent attachments.
   validation fails closed if `ssh -G` cannot resolve the configuration.
 - `kill` uses an exact tmux target and never accepts wildcards.
 - The implementation uses Bash arrays and never `eval`.
+- Updates verify SHA-256 checksums before executing or installing anything and
+  never overwrite package-owned files directly.
 
 ## Name conflicts
 
@@ -202,12 +278,15 @@ named `opensst` even though the installed command is `sst`.
 make check                 # Bash syntax checks plus the full test suite
 make package-deb VERSION=0.1.0
 make package-rpm VERSION=0.1.0
+make package-arch VERSION=0.1.0
 ```
 
 Tests run the real executable with a fake `ssh` on `PATH`; they never contact
-a real remote host. Package builds require `dpkg-deb` or `rpmbuild`, which may
-not exist on Arch hosts. CI builds and smoke-tests both packages on Ubuntu and
-Fedora.
+a real remote host. Update tests use fake downloaders, package tools, and
+`sudo`, so they never touch GitHub, a real package database, or an installed
+system. Package builds require `dpkg-deb`, `rpmbuild`, or `makepkg`, which may
+not all exist on one host. CI builds and smoke-tests DEB, RPM, and Arch
+packages on Ubuntu, Fedora, and Arch containers.
 
 Maintainer and release rules are in [AGENTS.md](AGENTS.md).
 

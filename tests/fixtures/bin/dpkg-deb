@@ -1,0 +1,13 @@
+#!/bin/bash
+# Fake dpkg-deb for sst update tests.
+set -u
+
+if [[ ${1-} == -f ]]; then
+  if [[ -n ${FAKE_DPKG_ASSET_VERSION-} ]]; then
+    printf '%s\n' "$FAKE_DPKG_ASSET_VERSION"
+    exit 0
+  fi
+  exit 1
+fi
+
+exit 1

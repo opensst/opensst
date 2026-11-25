@@ -11,6 +11,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: release-${{ inputs.version }}
+  cancel-in-progress: false
+
 jobs:
   validate:
     name: Validate release
@@ -42,6 +46,19 @@ jobs:
               echo "Tag $tag points to $tagged, not $GITHUB_SHA" >&2
               exit 1
             fi
+            if [ "$(git cat-file -t "refs/tags/$tag")" != tag ]; then
+              echo "Existing tag $tag is not annotated" >&2
+              exit 1
+            fi
+          fi
+      - name: Require the embedded version to match
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          embedded=$(sed -n "s/^SST_VERSION='\([0-9.]*\)'$/\1/p" bin/sst | head -n1)
+          if [ "$embedded" != "$VERSION" ]; then
+            echo "bin/sst SST_VERSION is '$embedded', but the release input is '$VERSION'" >&2
+            exit 1
           fi
 
   test:
@@ -100,11 +117,44 @@ jobs:
           path: dist/*.rpm
           retention-days: 7
 
+  package-arch:
+    name: Arch package
+    needs: test
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build tools
+        run: |
+          pacman-key --init
+          pacman-key --populate archlinux
+          pacman -Sy --noconfirm archlinux-keyring
+          pacman -Syu --noconfirm base-devel git
+      - name: Build Arch package as a non-root user
+        run: |
+          useradd -m builder
+          chown -R builder "$GITHUB_WORKSPACE"
+          su - builder -c "cd '$GITHUB_WORKSPACE' && packaging/build-arch.sh '$VERSION' dist"
+      - name: Install and smoke test Arch package
+        run: |
+          pacman -U --noconfirm "dist/opensst-${VERSION}-1-any.pkg.tar.zst"
+          sst --help
+          sst --version
+      - name: Upload Arch artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: opensst-arch
+          path: dist/*.pkg.tar.zst
+          retention-days: 7
+
   release:
     name: Publish release
     needs:
       - package-deb
       - package-rpm
+      - package-arch
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -120,17 +170,24 @@ jobs:
           pattern: opensst-*
           merge-multiple: true
           path: dist
-      - name: Generate checksums
+      - name: Prepare stable release assets
         run: |
-          cd dist
-          sha256sum "opensst_${VERSION}_all.deb" \
-            "opensst-${VERSION}-1.noarch.rpm" >SHA256SUMS
+          cp bin/sst dist/sst
+          packaging/release-assets.sh "$VERSION" dist
+      - name: Configure Git identity
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
       - name: Create annotated tag
         run: |
           tag="v$VERSION"
           if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
             if [ "$(git rev-list -n 1 "$tag")" != "$GITHUB_SHA" ]; then
               echo "Existing tag $tag does not point to $GITHUB_SHA" >&2
+              exit 1
+            fi
+            if [ "$(git cat-file -t "refs/tags/$tag")" != tag ]; then
+              echo "Existing tag $tag is not annotated" >&2
               exit 1
             fi
           else
@@ -148,7 +205,12 @@ jobs:
               --verify-tag \
               --generate-notes \
               --title "$tag" \
+              dist/sst \
+              dist/opensst.deb \
+              dist/opensst.rpm \
+              dist/opensst.pkg.tar.zst \
               "dist/opensst_${VERSION}_all.deb" \
               "dist/opensst-${VERSION}-1.noarch.rpm" \
+              "dist/opensst-${VERSION}-1-any.pkg.tar.zst" \
               dist/SHA256SUMS
           fi

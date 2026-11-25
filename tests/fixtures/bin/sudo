@@ -1,0 +1,11 @@
+#!/bin/bash
+# Fake sudo for sst update tests: log the command, then execute it unchanged.
+set -u
+
+if [[ -n ${FAKE_SUDO_LOG-} ]]; then
+  printf '%s\n' "$*" >>"$FAKE_SUDO_LOG"
+fi
+if [[ ${FAKE_SUDO_FAIL-} == 1 ]]; then
+  exit 1
+fi
+exec "$@"

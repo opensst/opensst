@@ -1,13 +1,19 @@
 #!/usr/bin/env bash
 set -u
 
+SST_VERSION='0.1.0'
+_SST_RELEASE_BASE='https://github.com/opensst/opensst/releases/latest/download'
+_SST_UPDATE_TMP=''
+
 _sst_usage() {
   cat <<'EOF'
 Usage:
   sst open [ssh options] <host> <project>
   sst list [ssh options] <host>
   sst kill [ssh options] <host> <project>
+  sst update [--check|--yes]
   sst --help
+  sst --version
 
 Manage reconnectable remote tmux sessions over SSH.
 
@@ -15,16 +21,676 @@ Manage reconnectable remote tmux sessions over SSH.
          when a long-lived connection drops.
   list   List remote tmux sessions.
   kill   Kill one exact remote tmux session.
+  update Detect the installation method and upgrade to the latest release.
+         --check reports without changing anything; --yes skips confirmation.
 
 Project names must match [A-Za-z0-9][A-Za-z0-9_-]*.
 SSH options are passed to ssh before the host. The host must be the only
-positional argument; remote commands are rejected.
+positional argument; remote commands are rejected. sst owns terminal
+allocation; -t and -T are rejected.
 EOF
 }
 
+_sst_cmd_version() {
+  printf 'sst %s\n' "$SST_VERSION"
+}
+
 _sst_valid_project() {
-  local name=${1-}
+  local name=${1-} LC_ALL=C
   [[ $name =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]]
+}
+
+# Normalize a package or script version to MAJOR.MINOR.PATCH.
+_sst_normalize_version() {
+  local raw=${1-}
+  if [[ $raw =~ ^[0-9]+:(.*)$ ]]; then
+    raw=${BASH_REMATCH[1]}
+  fi
+  if [[ $raw =~ ^(.+)-[0-9]+$ ]]; then
+    raw=${BASH_REMATCH[1]}
+  fi
+  if [[ ! $raw =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+    return 1
+  fi
+  printf '%s\n' "${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}"
+}
+
+# Compare two MAJOR.MINOR.PATCH versions; print lt, eq, or gt.
+_sst_version_cmp() {
+  local left=${1-} right=${2-}
+  local lmaj lmin lpat rmaj rmin rpat
+  if ! _sst_normalize_version "$left" >/dev/null ||
+    ! _sst_normalize_version "$right" >/dev/null; then
+    return 1
+  fi
+  IFS=. read -r lmaj lmin lpat <<<"$(_sst_normalize_version "$left")"
+  IFS=. read -r rmaj rmin rpat <<<"$(_sst_normalize_version "$right")"
+  if (( 10#$lmaj != 10#$rmaj )); then
+    (( 10#$lmaj < 10#$rmaj )) && printf 'lt\n' || printf 'gt\n'
+  elif (( 10#$lmin != 10#$rmin )); then
+    (( 10#$lmin < 10#$rmin )) && printf 'lt\n' || printf 'gt\n'
+  elif (( 10#$lpat != 10#$rpat )); then
+    (( 10#$lpat < 10#$rpat )) && printf 'lt\n' || printf 'gt\n'
+  else
+    printf 'eq\n'
+  fi
+}
+
+# Map an installation method to its stable release asset name.
+_sst_asset_for_method() {
+  case ${1-} in
+    deb) printf 'opensst.deb\n' ;;
+    rpm) printf 'opensst.rpm\n' ;;
+    pacman) printf 'opensst.pkg.tar.zst\n' ;;
+    source) printf 'sst\n' ;;
+    *) return 1 ;;
+  esac
+}
+
+# Resolve a script path or command name to an absolute path.
+_sst_self_path() {
+  local candidate=${1-} resolved
+  if [[ -z $candidate ]]; then
+    return 1
+  fi
+  if [[ $candidate != */* ]]; then
+    candidate=$(command -v "$candidate" 2>/dev/null) || return 1
+  fi
+  resolved=$(readlink -f -- "$candidate" 2>/dev/null) || return 1
+  if [[ -z $resolved ]]; then
+    return 1
+  fi
+  printf '%s\n' "$resolved"
+}
+
+# Print the method when a package owner is acceptable, refuse otherwise.
+# Returns 0 for the expected owner, 1 for no owner, 2 for a refusal.
+_sst_accept_owner() {
+  local method=$1 exe=$2 owner
+  shift 2
+  local -a owners=("$@")
+  local -A unique=()
+  for owner in "${owners[@]}"; do
+    owner=${owner//[[:space:]]/}
+    [[ -n $owner ]] && unique["$owner"]=1
+  done
+  if (( ${#unique[@]} == 0 )); then
+    return 1
+  fi
+  if (( ${#unique[@]} > 1 )); then
+    _SST_DETECT_ERROR="multiple packages own $exe; refusing to update"
+    return 2
+  fi
+  owner=${!unique[*]}
+  if [[ $owner != opensst ]]; then
+    _SST_DETECT_ERROR="$exe is owned by package '$owner', not 'opensst'; refusing to update"
+    return 2
+  fi
+  printf '%s\n' "$method"
+  return 0
+}
+
+# Check that an unowned executable may be replaced as a source install.
+_sst_source_eligible() {
+  local exe=${1-} dir top rel
+  _SST_DETECT_ERROR=''
+  dir=$(dirname -- "$exe")
+  if [[ $exe == /usr/bin/* ]]; then
+    _SST_DETECT_ERROR="$exe is in /usr/bin but no package owns it; reinstall opensst"
+    return 1
+  fi
+  if [[ ! -f $exe || ! -x $exe || ${exe##*/} != sst ]]; then
+    _SST_DETECT_ERROR="$exe is not an executable file named sst; reinstall opensst"
+    return 1
+  fi
+  if command -v git >/dev/null 2>&1; then
+    top=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null) || top=''
+    if [[ -n $top ]]; then
+      rel=${exe#"$top"/}
+      if git -C "$top" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1; then
+        _SST_DETECT_ERROR="$exe is tracked by a Git worktree; run the installed copy instead"
+        return 1
+      fi
+    fi
+  fi
+  if [[ -w $dir && -w $exe ]]; then
+    return 0
+  fi
+  if [[ $dir == /usr/local || $dir == /usr/local/* ]]; then
+    return 0
+  fi
+  _SST_DETECT_ERROR="$exe is not writable and is outside /usr/local; reinstall through a package"
+  return 1
+}
+
+# Detect how the running executable was installed: deb, rpm, pacman, or source.
+_sst_detect_install() {
+  local exe=${1-} out rc line part owner
+  local -a owners=()
+  _SST_DETECT_ERROR=''
+
+  if command -v dpkg-query >/dev/null 2>&1; then
+    if out=$(dpkg-query -S "$exe" 2>/dev/null); then
+      owners=()
+      while IFS= read -r line; do
+        [[ $line == diversion\ by* ]] && continue
+        part=${line%%:*}
+        local IFS=,
+        for owner in $part; do
+          owners+=("$owner")
+        done
+      done <<<"$out"
+      if (( ${#owners[@]} > 0 )); then
+        _sst_accept_owner deb "$exe" "${owners[@]}"
+        rc=$?
+        (( rc == 0 )) && return 0
+        (( rc == 2 )) && return 1
+      fi
+    fi
+  fi
+
+  if command -v rpm >/dev/null 2>&1; then
+    if out=$(rpm -qf --qf '%{NAME}\n' "$exe" 2>/dev/null); then
+      owners=()
+      mapfile -t owners <<<"$out"
+      if (( ${#owners[@]} > 0 )); then
+        _sst_accept_owner rpm "$exe" "${owners[@]}"
+        rc=$?
+        (( rc == 0 )) && return 0
+        (( rc == 2 )) && return 1
+      fi
+    fi
+  fi
+
+  if command -v pacman >/dev/null 2>&1; then
+    if out=$(pacman -Qqo "$exe" 2>/dev/null); then
+      owners=()
+      mapfile -t owners <<<"$out"
+      if (( ${#owners[@]} > 0 )); then
+        _sst_accept_owner pacman "$exe" "${owners[@]}"
+        rc=$?
+        (( rc == 0 )) && return 0
+        (( rc == 2 )) && return 1
+      fi
+    fi
+  fi
+
+  if _sst_source_eligible "$exe"; then
+    printf 'source\n'
+    return 0
+  fi
+  return 1
+}
+
+# Read SST_VERSION from an sst script without executing it.
+_sst_script_version() {
+  local file=${1-} line version=''
+  while IFS= read -r line; do
+    if [[ $line =~ ^SST_VERSION=\'([0-9]+\.[0-9]+\.[0-9]+)\'$ ]]; then
+      version=${BASH_REMATCH[1]}
+      break
+    fi
+  done <"$file"
+  if [[ -z $version ]]; then
+    return 1
+  fi
+  printf '%s\n' "$version"
+}
+
+# Read the installed version from the owning package database or source file.
+_sst_installed_version() {
+  local method=${1-} exe=${2-} out
+  _SST_VERSION_ERROR=''
+  case $method in
+    deb)
+      if ! command -v dpkg-query >/dev/null 2>&1; then
+        _SST_VERSION_ERROR='dpkg-query is required to read the installed DEB version'
+        return 127
+      fi
+      out=$(dpkg-query -W -f='${Version}' opensst 2>/dev/null) || out=''
+      ;;
+    rpm)
+      if ! command -v rpm >/dev/null 2>&1; then
+        _SST_VERSION_ERROR='rpm is required to read the installed RPM version'
+        return 127
+      fi
+      out=$(rpm -q --qf '%{VERSION}' opensst 2>/dev/null) || out=''
+      ;;
+    pacman)
+      if ! command -v pacman >/dev/null 2>&1; then
+        _SST_VERSION_ERROR='pacman is required to read the installed Arch version'
+        return 127
+      fi
+      out=$(pacman -Q opensst 2>/dev/null) || out=''
+      out=${out##* }
+      ;;
+    source)
+      out=$(_sst_script_version "$exe" 2>/dev/null) || out=''
+      ;;
+    *)
+      _SST_VERSION_ERROR="unknown installation method '$method'"
+      return 1
+      ;;
+  esac
+  if [[ -z $out ]]; then
+    _SST_VERSION_ERROR="unable to read the installed $method version; reinstall opensst"
+    return 1
+  fi
+  printf '%s\n' "$out"
+}
+
+# Read the version recorded in a downloaded release asset without executing it.
+_sst_asset_version() {
+  local method=${1-} file=${2-} out
+  _SST_VERSION_ERROR=''
+  case $method in
+    deb)
+      if ! command -v dpkg-deb >/dev/null 2>&1; then
+        _SST_VERSION_ERROR='dpkg-deb is required to inspect the downloaded DEB'
+        return 127
+      fi
+      out=$(dpkg-deb -f "$file" Version 2>/dev/null) || out=''
+      ;;
+    rpm)
+      if ! command -v rpm >/dev/null 2>&1; then
+        _SST_VERSION_ERROR='rpm is required to inspect the downloaded RPM'
+        return 127
+      fi
+      out=$(rpm -qp --qf '%{VERSION}' "$file" 2>/dev/null) || out=''
+      ;;
+    pacman)
+      if ! command -v pacman >/dev/null 2>&1; then
+        _SST_VERSION_ERROR='pacman is required to inspect the downloaded Arch package'
+        return 127
+      fi
+      out=$(pacman -Qip "$file" 2>/dev/null) || out=''
+      out=$(printf '%s\n' "$out" | sed -n 's/^Version[[:space:]]*:[[:space:]]*//p' | head -n1)
+      ;;
+    source)
+      out=$(_sst_script_version "$file" 2>/dev/null) || out=''
+      ;;
+    *)
+      _SST_VERSION_ERROR="unknown installation method '$method'"
+      return 1
+      ;;
+  esac
+  if [[ -z $out ]]; then
+    _SST_VERSION_ERROR="unable to read the $method release version from the downloaded asset"
+    return 1
+  fi
+  printf '%s\n' "$out"
+}
+
+# Download a release asset through curl or wget.
+_sst_download() {
+  local url=${1-} dest=${2-}
+  _SST_DOWNLOAD_ERROR=''
+  if command -v curl >/dev/null 2>&1; then
+    if curl --proto '=https' --proto-redir '=https' --fail --silent --show-error \
+      --location --retry 2 --connect-timeout 10 --max-time 120 -o "$dest" "$url"; then
+      return 0
+    fi
+    _SST_DOWNLOAD_ERROR="failed to download $url"
+    return 1
+  fi
+  if command -v wget >/dev/null 2>&1; then
+    if wget -q --https-only --tries=2 --timeout=120 -O "$dest" "$url"; then
+      return 0
+    fi
+    _SST_DOWNLOAD_ERROR="failed to download $url"
+    return 1
+  fi
+  _SST_DOWNLOAD_ERROR='curl or wget is required for sst update'
+  return 127
+}
+
+# Verify one asset against exactly one SHA256SUMS entry.
+_sst_verify_sha256() {
+  local file=${1-} sums=${2-} name=${3-} line expected='' digest count=0
+  _SST_VERIFY_ERROR=''
+  if ! command -v sha256sum >/dev/null 2>&1; then
+    _SST_VERIFY_ERROR='sha256sum is required for sst update'
+    return 127
+  fi
+  if [[ ! -f $file || ! -f $sums ]]; then
+    _SST_VERIFY_ERROR='downloaded asset or checksum file is missing'
+    return 1
+  fi
+  while IFS= read -r line; do
+    if [[ $line =~ ^([0-9a-fA-F]{64})[[:space:]]+\*?(.+)$ ]]; then
+      if [[ ${BASH_REMATCH[2]} == "$name" ]]; then
+        expected=${BASH_REMATCH[1]}
+        count=$((count + 1))
+      fi
+    fi
+  done <"$sums"
+  if (( count == 0 )); then
+    _SST_VERIFY_ERROR="SHA256SUMS has no entry for $name"
+    return 1
+  fi
+  if (( count > 1 )); then
+    _SST_VERIFY_ERROR="SHA256SUMS has multiple entries for $name"
+    return 1
+  fi
+  read -r digest _ < <(sha256sum "$file") || return 1
+  if [[ ${digest,,} != "${expected,,}" ]]; then
+    _SST_VERIFY_ERROR="checksum mismatch for $name"
+    return 1
+  fi
+  return 0
+}
+
+# Download the checksummed asset for the detected method into a temp directory.
+_sst_fetch_release() {
+  local method=${1-} tmp=${2-} asset rc=0
+  _SST_UPDATE_ERROR=''
+  _SST_ASSET_FILE=''
+  _SST_LATEST_VERSION=''
+  asset=$(_sst_asset_for_method "$method") || {
+    _SST_UPDATE_ERROR="unknown installation method '$method'"
+    return 1
+  }
+  _sst_download "$_SST_RELEASE_BASE/SHA256SUMS" "$tmp/SHA256SUMS" || rc=$?
+  if (( rc != 0 )); then
+    _SST_UPDATE_ERROR=${_SST_DOWNLOAD_ERROR:-'failed to download SHA256SUMS'}
+    return "$rc"
+  fi
+  _sst_download "$_SST_RELEASE_BASE/$asset" "$tmp/$asset" || rc=$?
+  if (( rc != 0 )); then
+    _SST_UPDATE_ERROR=${_SST_DOWNLOAD_ERROR:-"failed to download $asset"}
+    return "$rc"
+  fi
+  rc=0
+  _sst_verify_sha256 "$tmp/$asset" "$tmp/SHA256SUMS" "$asset" || rc=$?
+  if (( rc != 0 )); then
+    _SST_UPDATE_ERROR=${_SST_VERIFY_ERROR:-"failed to verify $asset"}
+    return "$rc"
+  fi
+  rc=0
+  _sst_asset_version "$method" "$tmp/$asset" >"$tmp/version" || rc=$?
+  if (( rc != 0 )); then
+    _SST_UPDATE_ERROR=${_SST_VERSION_ERROR:-"failed to read the $method release version"}
+    return "$rc"
+  fi
+  _SST_LATEST_VERSION=$(<"$tmp/version")
+  _SST_ASSET_FILE="$tmp/$asset"
+  return 0
+}
+
+# Run a fixed privileged command directly as root or through sudo.
+_sst_run_privileged() {
+  _SST_PRIV_ERROR=''
+  if (( EUID == 0 )); then
+    "$@"
+    return
+  fi
+  if ! command -v sudo >/dev/null 2>&1; then
+    _SST_PRIV_ERROR='sudo is required for this update; install sudo or run sst update as root'
+    return 127
+  fi
+  sudo "$@"
+}
+
+# Ask before an upgrade. Returns 0 for yes and 1 for anything else.
+_sst_confirm_update() {
+  local current=${1-} latest=${2-} method=${3-} reply
+  printf 'sst: upgrade %s from %s to %s? [y/N] ' "$method" "$current" "$latest"
+  if ! IFS= read -r reply; then
+    printf '\n'
+    return 1
+  fi
+  case ${reply,,} in
+    y|yes) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Atomically replace a source installation, restoring it if the new file breaks.
+_sst_apply_source() {
+  local asset=${1-} exe=${2-} mode=${3-} dir backup tmpfile
+  _SST_APPLY_ERROR=''
+  dir=$(dirname -- "$exe")
+  backup="$dir/.sst-backup.$$"
+  tmpfile="$dir/.sst-new.$$"
+
+  case $mode in
+    sudo)
+      local rc=0
+      _sst_run_privileged cp -p -- "$exe" "$backup" || rc=$?
+      if (( rc != 0 )); then
+        _SST_APPLY_ERROR=${_SST_PRIV_ERROR:-'unable to back up the current sst executable'}
+        return "$rc"
+      fi
+      _sst_run_privileged install -m 755 -- "$asset" "$tmpfile" || rc=$?
+      if (( rc != 0 )); then
+        _SST_APPLY_ERROR=${_SST_PRIV_ERROR:-'unable to stage the new sst executable'}
+        _sst_run_privileged rm -f -- "$tmpfile" "$backup" 2>/dev/null || true
+        return "$rc"
+      fi
+      _sst_run_privileged mv -f -- "$tmpfile" "$exe" || rc=$?
+      if (( rc != 0 )); then
+        _SST_APPLY_ERROR=${_SST_PRIV_ERROR:-'unable to replace the sst executable'}
+        _sst_run_privileged rm -f -- "$tmpfile" "$backup" 2>/dev/null || true
+        return "$rc"
+      fi
+      ;;
+    user)
+      if ! cp -p -- "$exe" "$backup"; then
+        _SST_APPLY_ERROR='unable to back up the current sst executable'
+        return 1
+      fi
+      if ! install -m 755 -- "$asset" "$tmpfile"; then
+        _SST_APPLY_ERROR='unable to stage the new sst executable'
+        rm -f -- "$tmpfile" "$backup" 2>/dev/null || true
+        return 1
+      fi
+      if ! mv -f -- "$tmpfile" "$exe"; then
+        _SST_APPLY_ERROR='unable to replace the sst executable'
+        rm -f -- "$tmpfile" "$backup" 2>/dev/null || true
+        return 1
+      fi
+      ;;
+    *)
+      _SST_APPLY_ERROR="unknown source apply mode '$mode'"
+      return 1
+      ;;
+  esac
+
+  if ! "$exe" --version >/dev/null 2>&1; then
+    local restore=0
+    if [[ $mode == sudo ]]; then
+      _sst_run_privileged mv -f -- "$backup" "$exe" 2>/dev/null || restore=$?
+    else
+      mv -f -- "$backup" "$exe" 2>/dev/null || restore=$?
+    fi
+    if (( restore != 0 )); then
+      _SST_APPLY_ERROR="the new sst failed its post-install check and the previous file could not be restored; inspect $exe"
+    else
+      _SST_APPLY_ERROR='the new sst failed its post-install check; the previous file was restored'
+    fi
+    return 1
+  fi
+  if [[ $mode == sudo ]]; then
+    _sst_run_privileged rm -f -- "$backup" 2>/dev/null || true
+  else
+    rm -f -- "$backup" 2>/dev/null || true
+  fi
+  return 0
+}
+
+# Upgrade a package-managed install and verify the recorded version changed.
+_sst_apply_package() {
+  local method=${1-} asset=${2-} rc target_raw target_n current_raw current_n
+  _SST_APPLY_ERROR=''
+  case $method in
+    deb) _sst_run_privileged dpkg -i "$asset" ;;
+    rpm) _sst_run_privileged rpm -Uvh "$asset" ;;
+    pacman) _sst_run_privileged pacman -U --noconfirm "$asset" ;;
+    *)
+      _SST_APPLY_ERROR="unknown package method '$method'"
+      return 1
+      ;;
+  esac
+  rc=$?
+  if (( rc != 0 )); then
+    _SST_APPLY_ERROR=${_SST_PRIV_ERROR:-"the $method package command failed; inspect the package state with your package manager"}
+    return "$rc"
+  fi
+  if ! target_raw=$(_sst_asset_version "$method" "$asset"); then
+    _SST_APPLY_ERROR=${_SST_VERSION_ERROR:-"unable to read the $method release version"}
+    return 1
+  fi
+  if ! target_n=$(_sst_normalize_version "$target_raw"); then
+    _SST_APPLY_ERROR="the downloaded $method package has a non-stable version '$target_raw'"
+    return 1
+  fi
+  if ! current_raw=$(_sst_installed_version "$method" ''); then
+    _SST_APPLY_ERROR=${_SST_VERSION_ERROR:-"unable to read the installed $method version"}
+    return 1
+  fi
+  if ! current_n=$(_sst_normalize_version "$current_raw"); then
+    _SST_APPLY_ERROR="the installed $method version '$current_raw' is not stable"
+    return 1
+  fi
+  if [[ $current_n != "$target_n" ]]; then
+    _SST_APPLY_ERROR="the $method install reported success but the installed version is $current_raw, not $target_raw"
+    return 1
+  fi
+  return 0
+}
+
+# Check for or apply the latest release for the detected installation method.
+_sst_cmd_update() {
+  local check=0 yes=0 arg exe method current current_n latest latest_n cmp tmp mode rc
+  for arg in "$@"; do
+    case $arg in
+      --check)
+        if (( yes )); then
+          _sst_error '--check and --yes are mutually exclusive'
+          return 2
+        fi
+        check=1
+        ;;
+      --yes)
+        if (( check )); then
+          _sst_error '--check and --yes are mutually exclusive'
+          return 2
+        fi
+        yes=1
+        ;;
+      *)
+        _sst_error "unknown update option: $arg"
+        _sst_usage >&2
+        return 2
+        ;;
+    esac
+  done
+
+  if ! exe=$(_sst_self_path "${BASH_SOURCE[0]}"); then
+    _sst_error 'unable to resolve the sst executable'
+    return 2
+  fi
+  tmp=$(mktemp -d) || {
+    _sst_error 'unable to create a temporary directory'
+    return 1
+  }
+  _SST_UPDATE_TMP=$tmp
+  trap 'rm -rf "${_SST_UPDATE_TMP:-}"' EXIT
+  if ! _sst_detect_install "$exe" >"$tmp/method"; then
+    _sst_error "${_SST_DETECT_ERROR:-unable to detect how sst was installed}"
+    return 2
+  fi
+  method=$(<"$tmp/method")
+  rc=0
+  _sst_installed_version "$method" "$exe" >"$tmp/current" || rc=$?
+  if (( rc != 0 )); then
+    _sst_error "${_SST_VERSION_ERROR:-unable to read the installed version}"
+    if (( rc == 127 )); then
+      return 127
+    fi
+    if [[ $method == source ]]; then
+      return 2
+    fi
+    return 1
+  fi
+  current=$(<"$tmp/current")
+  if ! current_n=$(_sst_normalize_version "$current"); then
+    _sst_error "installed version '$current' is not stable MAJOR.MINOR.PATCH; reinstall opensst"
+    return 1
+  fi
+
+  rc=0
+  _sst_fetch_release "$method" "$tmp" || rc=$?
+  if (( rc != 0 )); then
+    _sst_error "${_SST_UPDATE_ERROR:-unable to download the latest release}"
+    return "$rc"
+  fi
+  if ! latest=$(_sst_normalize_version "$_SST_LATEST_VERSION"); then
+    _sst_error "latest release version '$_SST_LATEST_VERSION' is not stable MAJOR.MINOR.PATCH"
+    return 1
+  fi
+
+  printf 'sst: installed %s (%s)\n' "$current_n" "$method"
+  printf 'sst: latest %s (%s)\n' "$latest" "$method"
+  if ! cmp=$(_sst_version_cmp "$current_n" "$latest"); then
+    _sst_error 'unable to compare versions'
+    return 1
+  fi
+  case $cmp in
+    eq)
+      printf 'sst: %s is up to date\n' "$current_n"
+      return 0
+      ;;
+    gt)
+      printf 'sst: installed %s is newer than latest release %s; no downgrade performed\n' \
+        "$current_n" "$latest"
+      return 0
+      ;;
+  esac
+  printf 'sst: update available\n'
+  if (( check )); then
+    printf 'sst: run sst update to upgrade\n'
+    return 0
+  fi
+  if (( !yes )) && [[ ! -t 0 || ! -t 1 ]]; then
+    _sst_error 'update requires confirmation; use --yes in non-interactive contexts'
+    return 2
+  fi
+  if (( !yes )); then
+    if ! _sst_confirm_update "$current_n" "$latest" "$method"; then
+      printf 'sst: update cancelled\n'
+      return 0
+    fi
+  fi
+
+  case $method in
+    source)
+      mode=user
+      if [[ ! -w $exe || ! -w $(dirname -- "$exe") ]]; then
+        mode=sudo
+      fi
+      rc=0
+      _sst_apply_source "$_SST_ASSET_FILE" "$exe" "$mode" || rc=$?
+      if (( rc != 0 )); then
+        _sst_error "${_SST_APPLY_ERROR:-source update failed}"
+        return "$rc"
+      fi
+      printf 'sst: updated to %s\n' "$latest"
+      ;;
+    deb|rpm|pacman)
+      rc=0
+      _sst_apply_package "$method" "$_SST_ASSET_FILE" || rc=$?
+      if (( rc != 0 )); then
+        _sst_error "${_SST_APPLY_ERROR:-package update failed}"
+        return "$rc"
+      fi
+      printf 'sst: updated to %s\n' "$latest"
+      ;;
+    *)
+      _sst_error "unsupported installation method '$method'"
+      return 2
+      ;;
+  esac
 }
 
 # Validate an SSH argument vector before appending a fixed remote command.
@@ -34,6 +700,8 @@ _sst_validate_ssh() {
   local value_options='BbcDEeFIiJLlmOoPpQRSWw'
   local i=0 dest='' arg cluster ch value line
   local output
+
+  _SST_SSH_ERROR='invalid SSH arguments; supply options and exactly one host'
 
   while (( i < ${#argv[@]} )); do
     arg=${argv[i]}
@@ -54,12 +722,17 @@ _sst_validate_ssh() {
       local j=0
       while (( j < ${#cluster} )); do
         ch=${cluster:j:1}
+        if [[ $ch == t || $ch == T ]]; then
+          _SST_SSH_ERROR='sst controls terminal allocation; remove -t or -T from ssh options'
+          return 1
+        fi
         if [[ $value_options == *"$ch"* ]]; then
           if (( j + 1 < ${#cluster} )); then
             j=${#cluster}
           else
             ((i++))
             if (( i >= ${#argv[@]} )); then
+              _SST_SSH_ERROR='invalid SSH arguments; an option is missing its value'
               return 1
             fi
             value=${argv[i]}
@@ -80,7 +753,8 @@ _sst_validate_ssh() {
 
   [[ -n $dest ]] || return 1
 
-  if ! output=$(command ssh -G "${argv[@]}" 2>/dev/null); then
+  if ! output=$(command ssh -G "${argv[@]}" true 2>/dev/null); then
+    _SST_SSH_ERROR='unable to validate SSH configuration; check ssh options, RemoteCommand, and host configuration'
     return 1
   fi
 
@@ -88,6 +762,7 @@ _sst_validate_ssh() {
     if [[ $line =~ ^remotecommand[[:space:]]+(.*)$ ]]; then
       value=${BASH_REMATCH[1]}
       if [[ $value != none ]]; then
+        _SST_SSH_ERROR='effective RemoteCommand is not none; remove it from SSH configuration'
         return 1
       fi
     fi
@@ -127,7 +802,7 @@ _sst_remote_command() {
 _sst_cmd_list() {
   _sst_require_ssh || return 127
   if ! _sst_validate_ssh "$@"; then
-    _sst_error 'invalid SSH arguments; supply options and exactly one host'
+    _sst_error "$_SST_SSH_ERROR"
     return 2
   fi
   _sst_ssh -T "$@" "$(_sst_remote_command list)"
@@ -146,7 +821,7 @@ _sst_cmd_kill() {
   fi
   local -a argv=("${@:1:$#-1}")
   if ! _sst_validate_ssh "${argv[@]}"; then
-    _sst_error 'invalid SSH arguments; supply options and exactly one host'
+    _sst_error "$_SST_SSH_ERROR"
     return 2
   fi
   _sst_ssh -T "${argv[@]}" "$(_sst_remote_command kill "$project")"
@@ -199,7 +874,7 @@ _sst_cmd_open() {
   fi
   local -a argv=("${@:1:$#-1}")
   if ! _sst_validate_ssh "${argv[@]}"; then
-    _sst_error 'invalid SSH arguments; supply options and exactly one host'
+    _sst_error "$_SST_SSH_ERROR"
     return 2
   fi
   _sst_open_session "${argv[@]}" "$project"
@@ -210,9 +885,11 @@ _sst_main() {
   shift || true
   case $cmd in
     -h|--help) _sst_usage ;;
+    -V|--version) _sst_cmd_version ;;
     open) _sst_cmd_open "$@" ;;
     list) _sst_cmd_list "$@" ;;
     kill) _sst_cmd_kill "$@" ;;
+    update) _sst_cmd_update "$@" ;;
     '') _sst_usage >&2; return 2 ;;
     *) _sst_usage >&2; return 2 ;;
   esac

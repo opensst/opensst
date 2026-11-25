@@ -1,0 +1,15 @@
+#!/bin/bash
+# Fake dpkg for sst update tests.
+set -u
+
+if [[ ${1-} == -i ]]; then
+  if [[ ${FAKE_PKG_FAIL-} == 1 ]]; then
+    exit 1
+  fi
+  if [[ -n ${FAKE_PKG_STATE-} ]]; then
+    printf '%s\n' "${FAKE_PKG_ASSET_VERSION-}" >"$FAKE_PKG_STATE"
+  fi
+  exit 0
+fi
+
+exit 1

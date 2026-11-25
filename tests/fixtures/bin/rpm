@@ -1,0 +1,47 @@
+#!/bin/bash
+# Fake rpm for sst update tests.
+set -u
+
+if [[ -n ${FAKE_RPM_LOG-} ]]; then
+  printf '%s\n' "$*" >>"$FAKE_RPM_LOG"
+fi
+
+case ${1-} in
+  -qf)
+    if [[ -n ${FAKE_RPM_OWNER-} ]]; then
+      printf '%s\n' "$FAKE_RPM_OWNER"
+      exit 0
+    fi
+    exit 1
+    ;;
+  -q)
+    if [[ -n ${FAKE_PKG_STATE-} && -f ${FAKE_PKG_STATE-} ]]; then
+      cat "$FAKE_PKG_STATE"
+      exit 0
+    fi
+    if [[ -n ${FAKE_RPM_INSTALLED_VERSION-} ]]; then
+      printf '%s\n' "$FAKE_RPM_INSTALLED_VERSION"
+      exit 0
+    fi
+    exit 1
+    ;;
+  -qp)
+    if [[ -n ${FAKE_RPM_ASSET_VERSION-} ]]; then
+      printf '%s\n' "$FAKE_RPM_ASSET_VERSION"
+      exit 0
+    fi
+    exit 1
+    ;;
+  -Uvh)
+    if [[ ${FAKE_PKG_FAIL-} == 1 ]]; then
+      exit 1
+    fi
+    if [[ -n ${FAKE_PKG_STATE-} ]]; then
+      printf '%s\n' "${FAKE_PKG_ASSET_VERSION-}" >"$FAKE_PKG_STATE"
+    fi
+    exit 0
+    ;;
+  *)
+    exit 1
+    ;;
+esac

@@ -9,12 +9,19 @@ if [[ ! $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   exit 2
 fi
 
+root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+embedded=$(sed -n "s/^SST_VERSION='\([0-9.]*\)'$/\1/p" "$root/bin/sst" | head -n1) || embedded=''
+if [[ $embedded != "$version" ]]; then
+  printf 'build-deb: version %s does not match bin/sst SST_VERSION %s\n' \
+    "$version" "${embedded:-unknown}" >&2
+  exit 2
+fi
+
 if ! command -v dpkg-deb >/dev/null 2>&1; then
   printf 'build-deb: dpkg-deb not found; install dpkg (Debian/Ubuntu)\n' >&2
   exit 127
 fi
 
-root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 mkdir -p "$outdir"
 outdir=$(cd -- "$outdir" && pwd)
 stage=$(mktemp -d)
@@ -31,7 +38,7 @@ Version: $version
 Section: utils
 Priority: optional
 Architecture: all
-Depends: bash, openssh-client
+Depends: bash, openssh-client, curl
 Maintainer: duanhongyi <duanhongyi@doopai.com>
 Homepage: https://github.com/opensst/opensst
 Description: Reconnectable SSH sessions backed by remote tmux

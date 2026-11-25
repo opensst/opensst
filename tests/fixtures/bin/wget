@@ -1,0 +1,30 @@
+#!/bin/bash
+# Fake wget for sst update tests: serve files from FAKE_WGET_DIR.
+set -euo pipefail
+
+dest='' url='' arg=''
+args=("$@")
+for ((i = 0; i < ${#args[@]}; i++)); do
+  arg=${args[i]}
+  case $arg in
+    -O)
+      i=$((i + 1))
+      dest=${args[i]-}
+      ;;
+  esac
+done
+url=${args[${#args[@]}-1]-}
+
+if [[ -n ${FAKE_WGET_LOG-} ]]; then
+  printf '%s\n' "$*" >>"$FAKE_WGET_LOG"
+fi
+
+base=${url##*/}
+if [[ ${FAKE_WGET_FAIL_ASSET-} == "$base" ]]; then
+  exit 8
+fi
+if [[ -n ${FAKE_WGET_DIR-} && -f ${FAKE_WGET_DIR}/$base ]]; then
+  cp "${FAKE_WGET_DIR}/$base" "$dest"
+  exit 0
+fi
+exit 8

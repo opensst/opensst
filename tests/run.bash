@@ -67,6 +67,17 @@ assert_file() {
   fi
 }
 
+assert_file_order() {
+  local file=$1 first=$2 second=$3 label=$4 first_line second_line
+  first_line=$(grep -nF -- "$first" "$file" | head -n1 | cut -d: -f1)
+  second_line=$(grep -nF -- "$second" "$file" | head -n1 | cut -d: -f1)
+  if [[ -n $first_line && -n $second_line ]] && (( first_line < second_line )); then
+    pass "$label"
+  else
+    fail "$label (expected '$first' before '$second' in $file)"
+  fi
+}
+
 assert_executable() {
   if [[ -x $1 ]]; then
     pass "$2"
@@ -98,10 +109,460 @@ test_help() {
   assert_contains "$OUTPUT" "sst open" "help documents open"
   assert_contains "$OUTPUT" "sst list" "help documents list"
   assert_contains "$OUTPUT" "sst kill" "help documents kill"
+  assert_contains "$OUTPUT" "-t and -T are rejected" "help documents sst-owned terminal allocation"
+  assert_contains "$OUTPUT" "sst update" "help documents update"
+  assert_contains "$OUTPUT" "--check" "help documents update --check"
 
   run_capture "$SST" -h
   assert_eq "$STATUS" 0 "sst -h exits 0"
   assert_contains "$OUTPUT" "sst open" "-h prints the same usage"
+}
+
+test_version() {
+  run_capture "$SST" --version
+  assert_eq "$STATUS" 0 "sst --version exits 0"
+  assert_eq "$OUTPUT" "sst 0.1.0" "sst --version prints the embedded version"
+
+  run_capture "$SST" --help
+  assert_contains "$OUTPUT" "sst --version" "help documents --version"
+}
+
+test_version_helpers() {
+  run_sourced _sst_normalize_version '1:0.1.0-2'
+  assert_eq "$STATUS" 0 "epoch and package release are normalized"
+  assert_eq "$OUTPUT" "0.1.0" "normalized version keeps three components"
+
+  run_sourced _sst_normalize_version '0.1.1-1'
+  assert_eq "$OUTPUT" "0.1.1" "arch pkgrel is normalized away"
+
+  run_sourced _sst_normalize_version '0.1.0-rc1'
+  assert_eq "$STATUS" 1 "prerelease versions are rejected"
+
+  run_sourced _sst_normalize_version '0.1'
+  assert_eq "$STATUS" 1 "short versions are rejected"
+
+  run_sourced _sst_version_cmp 0.1.0 0.1.1
+  assert_eq "$OUTPUT" lt "older version compares lt"
+
+  run_sourced _sst_version_cmp 0.1.0 0.1.0
+  assert_eq "$OUTPUT" eq "equal versions compare eq"
+
+  run_sourced _sst_version_cmp 0.2.0 0.1.9
+  assert_eq "$OUTPUT" gt "newer version compares gt"
+
+  for pair in 'deb opensst.deb' 'rpm opensst.rpm' 'pacman opensst.pkg.tar.zst' 'source sst'; do
+    set -- $pair
+    run_sourced _sst_asset_for_method "$1"
+    assert_eq "$OUTPUT" "$2" "asset for $1"
+  done
+
+  run_sourced _sst_asset_for_method unknown
+  assert_eq "$STATUS" 1 "unknown update method has no asset"
+}
+
+# Report the detection failure reason for assertions; library detection itself
+# only sets _SST_DETECT_ERROR.
+detect_error_text() {
+  if _sst_detect_install "$1"; then
+    printf 'ok\n'
+  else
+    printf '%s\n' "$_SST_DETECT_ERROR"
+  fi
+}
+
+test_update_detection() {
+  local exe="$TMP/detect/sst"
+  mkdir -p "$(dirname "$exe")"
+  cp "$SST" "$exe"
+  chmod +x "$exe"
+
+  run_sourced _sst_self_path "$exe"
+  assert_eq "$STATUS" 0 "self path resolves"
+  assert_eq "$OUTPUT" "$exe" "self path is absolute"
+
+  run_sourced _sst_detect_install "$exe"
+  assert_eq "$STATUS" 0 "writable untracked source install is detected"
+  assert_eq "$OUTPUT" source "source method is reported"
+
+  FAKE_DPKG_OWNER=opensst run_sourced _sst_detect_install "$exe"
+  assert_eq "$OUTPUT" deb "DEB owner is detected"
+
+  FAKE_RPM_OWNER=opensst run_sourced _sst_detect_install "$exe"
+  assert_eq "$OUTPUT" rpm "RPM owner is detected"
+
+  : >"$TMP/rpm-detect.log"
+  FAKE_RPM_LOG="$TMP/rpm-detect.log" FAKE_RPM_OWNER=opensst \
+    run_sourced _sst_detect_install "$exe"
+  assert_file_contains "$TMP/rpm-detect.log" "-qf --qf %{NAME}" \
+    "RPM ownership query asks for the package name"
+
+  FAKE_PACMAN_OWNER=opensst run_sourced _sst_detect_install "$exe"
+  assert_eq "$OUTPUT" pacman "pacman owner is detected"
+
+  FAKE_DPKG_OWNER=otherpkg run_sourced detect_error_text "$exe"
+  assert_contains "$OUTPUT" "otherpkg" "foreign package owner is named in the refusal"
+  assert_contains "$OUTPUT" "$exe" "foreign package refusal names the path"
+
+  FAKE_DPKG_MULTI=1 run_sourced detect_error_text "$exe"
+  assert_contains "$OUTPUT" "multiple" "multiple package owners are refused"
+  assert_contains "$OUTPUT" "$exe" "multiple-owner refusal names the path"
+
+  run_sourced detect_error_text /usr/bin/sst
+  assert_contains "$OUTPUT" "/usr/bin/sst" "unowned /usr/bin path is refused"
+
+  if command -v git >/dev/null 2>&1; then
+    local repo="$TMP/tracked-repo"
+    mkdir -p "$repo"
+    git -C "$repo" init -q
+    cp "$SST" "$repo/sst"
+    chmod +x "$repo/sst"
+    git -C "$repo" add sst
+    run_sourced detect_error_text "$repo/sst"
+    assert_contains "$OUTPUT" "Git" "Git-tracked source file is refused"
+  else
+    printf '# skip Git-tracked source test: git is unavailable\n'
+  fi
+}
+
+test_update_version_readers() {
+  local exe="$TMP/readers/sst" file="$TMP/readers/asset"
+  mkdir -p "$(dirname "$exe")"
+  cp "$SST" "$exe"
+  printf 'x\n' >"$file"
+
+  FAKE_DPKG_INSTALLED_VERSION=0.1.0 run_sourced _sst_installed_version deb "$exe"
+  assert_eq "$OUTPUT" 0.1.0 "DEB installed version"
+  FAKE_DPKG_ASSET_VERSION=0.1.1 run_sourced _sst_asset_version deb "$file"
+  assert_eq "$OUTPUT" 0.1.1 "DEB asset version"
+
+  FAKE_RPM_INSTALLED_VERSION=0.1.0 run_sourced _sst_installed_version rpm "$exe"
+  assert_eq "$OUTPUT" 0.1.0 "RPM installed version"
+  FAKE_RPM_ASSET_VERSION=0.1.1 run_sourced _sst_asset_version rpm "$file"
+  assert_eq "$OUTPUT" 0.1.1 "RPM asset version"
+
+  FAKE_PACMAN_INSTALLED_VERSION=0.1.0-1 run_sourced _sst_installed_version pacman "$exe"
+  assert_eq "$OUTPUT" 0.1.0-1 "pacman installed version"
+  FAKE_PACMAN_ASSET_VERSION=0.1.1-1 run_sourced _sst_asset_version pacman "$file"
+  assert_eq "$OUTPUT" 0.1.1-1 "pacman asset version"
+
+  run_sourced _sst_installed_version source "$exe"
+  assert_eq "$OUTPUT" 0.1.0 "source installed version"
+
+  printf "SST_VERSION='0.1.1'\n" >"$file"
+  run_sourced _sst_asset_version source "$file"
+  assert_eq "$OUTPUT" 0.1.1 "source asset version"
+
+  printf '#!/bin/bash\n' >"$file"
+  run_sourced _sst_asset_version source "$file"
+  assert_eq "$STATUS" 1 "source asset without version is rejected"
+
+  (
+    PATH=/nonexistent
+    # shellcheck disable=SC1090
+    source "$SST"
+    _sst_asset_version deb "$file"
+  ) >/dev/null 2>&1
+  STATUS=$?
+  assert_eq "$STATUS" 127 "missing dpkg-deb returns 127"
+}
+
+test_update_download() {
+  local dir="$TMP/download" asset="$TMP/download/sst" sums="$TMP/download/SHA256SUMS"
+  mkdir -p "$dir"
+  printf "SST_VERSION='0.1.1'\n" >"$asset"
+  (cd "$dir" && sha256sum sst >SHA256SUMS)
+
+  FAKE_CURL_DIR="$dir" run_sourced _sst_download https://example.invalid/sst "$TMP/fetched"
+  assert_eq "$STATUS" 0 "curl download succeeds"
+
+  FAKE_CURL_FAIL_ASSET=sst run_sourced _sst_download https://example.invalid/sst "$TMP/failed"
+  assert_eq "$STATUS" 1 "download failure is reported"
+
+  run_sourced _sst_verify_sha256 "$asset" "$sums" sst
+  assert_eq "$STATUS" 0 "matching checksum is accepted"
+
+  printf 'x\n' >"$asset"
+  run_sourced _sst_verify_sha256 "$asset" "$sums" sst
+  assert_eq "$STATUS" 1 "mismatched checksum is rejected"
+
+  run_sourced _sst_verify_sha256 "$asset" "$sums" missing
+  assert_eq "$STATUS" 1 "missing checksum entry is rejected"
+
+  printf 'deadbeef  sst\n' >"$sums"
+  run_sourced _sst_verify_sha256 "$asset" "$sums" sst
+  assert_eq "$STATUS" 1 "malformed checksum is rejected"
+
+  printf '%s  sst\n%s  sst\n' "$(sha256sum "$asset" | cut -d' ' -f1)" \
+    "$(sha256sum "$asset" | cut -d' ' -f1)" >"$sums"
+  run_sourced _sst_verify_sha256 "$asset" "$sums" sst
+  assert_eq "$STATUS" 1 "duplicate checksum entries are rejected"
+
+  (
+    PATH=/nonexistent
+    # shellcheck disable=SC1090
+    source "$SST"
+    _sst_download https://example.invalid/sst "$TMP/none"
+  ) >/dev/null 2>&1
+  STATUS=$?
+  assert_eq "$STATUS" 127 "missing downloader returns 127"
+
+  (
+    PATH=/nonexistent
+    # shellcheck disable=SC1090
+    source "$SST"
+    _sst_verify_sha256 "$asset" "$sums" sst
+  ) >/dev/null 2>&1
+  STATUS=$?
+  assert_eq "$STATUS" 127 "missing sha256sum returns 127"
+
+  local only="$TMP/wget-only"
+  mkdir -p "$only"
+  cp "$FAKEBIN/wget" "$only/wget"
+  ln -s "$(command -v cp)" "$only/cp"
+  (
+    PATH="$only"
+    # shellcheck disable=SC1090
+    source "$SST"
+    FAKE_WGET_DIR="$dir" _sst_download https://example.invalid/sst "$TMP/wget-fetched"
+  )
+  STATUS=$?
+  assert_eq "$STATUS" 0 "wget fallback succeeds when curl is absent"
+  assert_file "$TMP/wget-fetched" "wget fallback writes the destination"
+}
+
+run_update() {
+  local self="$TMP/update-self/sst"
+  mkdir -p "$(dirname "$self")"
+  cp "$SST" "$self"
+  chmod +x "$self"
+  : >"$TMP/stdout"
+  : >"$TMP/stderr"
+  env PATH="$FAKEBIN:$PATH" \
+    FAKE_SSH_LOG="${FAKE_SSH_LOG-}" \
+    FAKE_SSH_G_LOG="${FAKE_SSH_G_LOG-}" \
+    FAKE_CURL_DIR="${FAKE_CURL_DIR-}" \
+    FAKE_CURL_FAIL_ASSET="${FAKE_CURL_FAIL_ASSET-}" \
+    FAKE_CURL_LOG="${FAKE_CURL_LOG-}" \
+    FAKE_WGET_DIR="${FAKE_WGET_DIR-}" \
+    FAKE_WGET_FAIL_ASSET="${FAKE_WGET_FAIL_ASSET-}" \
+    FAKE_DPKG_OWNER="${FAKE_DPKG_OWNER-}" \
+    FAKE_DPKG_MULTI="${FAKE_DPKG_MULTI-}" \
+    FAKE_DPKG_INSTALLED_VERSION="${FAKE_DPKG_INSTALLED_VERSION-}" \
+    FAKE_DPKG_ASSET_VERSION="${FAKE_DPKG_ASSET_VERSION-}" \
+    FAKE_RPM_OWNER="${FAKE_RPM_OWNER-}" \
+    FAKE_RPM_INSTALLED_VERSION="${FAKE_RPM_INSTALLED_VERSION-}" \
+    FAKE_RPM_ASSET_VERSION="${FAKE_RPM_ASSET_VERSION-}" \
+    FAKE_PACMAN_OWNER="${FAKE_PACMAN_OWNER-}" \
+    FAKE_PACMAN_INSTALLED_VERSION="${FAKE_PACMAN_INSTALLED_VERSION-}" \
+    FAKE_PACMAN_ASSET_VERSION="${FAKE_PACMAN_ASSET_VERSION-}" \
+    FAKE_PKG_STATE="${FAKE_PKG_STATE-}" \
+    FAKE_PKG_ASSET_VERSION="${FAKE_PKG_ASSET_VERSION-}" \
+    FAKE_PKG_FAIL="${FAKE_PKG_FAIL-}" \
+    FAKE_SUDO_LOG="$TMP/sudo.log" \
+    FAKE_SUDO_FAIL="${FAKE_SUDO_FAIL-}" \
+    "$self" "$@" >"$TMP/stdout" 2>"$TMP/stderr"
+  STATUS=$?
+  OUTPUT=$(<"$TMP/stdout")
+  ERROR=$(<"$TMP/stderr")
+}
+
+run_update_tty() {
+  local input=$1
+  shift
+  local self="$TMP/update-self/sst"
+  mkdir -p "$(dirname "$self")"
+  cp "$SST" "$self"
+  chmod +x "$self"
+  : >"$TMP/stdout"
+  : >"$TMP/stderr"
+  local cmd
+  cmd=$(printf 'PATH=%q FAKE_CURL_DIR=%q FAKE_DPKG_OWNER=%q FAKE_RPM_OWNER=%q FAKE_PACMAN_OWNER=%q %q' \
+    "$FAKEBIN:$PATH" "${FAKE_CURL_DIR-}" "${FAKE_DPKG_OWNER-}" \
+    "${FAKE_RPM_OWNER-}" "${FAKE_PACMAN_OWNER-}" "$self")
+  local arg
+  for arg in "$@"; do
+    cmd+=$(printf ' %q' "$arg")
+  done
+  printf '%s\n' "$input" | script -qec "$cmd" /dev/null >"$TMP/stdout" 2>"$TMP/stderr"
+  STATUS=$?
+  OUTPUT=$(<"$TMP/stdout")
+  ERROR=$(<"$TMP/stderr")
+}
+
+test_update_check() {
+  local dir="$TMP/release-check" self="$TMP/update-self/sst"
+  mkdir -p "$dir"
+  printf "#!/bin/bash\nSST_VERSION='0.1.1'\nprintf 'sst 0.1.1\\n'\n" >"$dir/sst"
+  (cd "$dir" && sha256sum sst >SHA256SUMS)
+
+  FAKE_CURL_DIR="$dir" run_update update --check
+  assert_eq "$STATUS" 0 "source update check exits 0"
+  assert_contains "$OUTPUT" "installed 0.1.0" "check reports installed version"
+  assert_contains "$OUTPUT" "latest 0.1.1" "check reports latest version"
+  assert_contains "$OUTPUT" "update available" "check reports availability"
+  assert_eq "$(grep -c "SST_VERSION='0.1.0'" "$self")" 1 \
+    "check does not modify the source file"
+
+  printf "#!/bin/bash\nSST_VERSION='0.1.0'\nprintf 'sst 0.1.0\\n'\n" >"$dir/sst"
+  (cd "$dir" && sha256sum sst >SHA256SUMS)
+  FAKE_CURL_DIR="$dir" run_update update --check
+  assert_contains "$OUTPUT" "up to date" "equal versions are up to date"
+
+  printf "#!/bin/bash\nSST_VERSION='0.0.9'\nprintf 'sst 0.0.9\\n'\n" >"$dir/sst"
+  (cd "$dir" && sha256sum sst >SHA256SUMS)
+  FAKE_CURL_DIR="$dir" run_update update --check
+  assert_eq "$STATUS" 0 "newer installed version is not a failure"
+  assert_contains "$OUTPUT" "no downgrade" "newer installed version refuses downgrade"
+
+  printf "#!/bin/bash\nSST_VERSION='0.1.1'\nprintf 'sst 0.1.1\\n'\n" >"$dir/sst"
+  (cd "$dir" && sha256sum sst >SHA256SUMS)
+  printf 'corrupt\n' >"$dir/sst"
+  FAKE_CURL_DIR="$dir" run_update update --check
+  assert_eq "$STATUS" 1 "checksum mismatch fails"
+  assert_contains "$ERROR" "checksum" "checksum failure is explained"
+
+  local nover="$TMP/no-version/sst"
+  mkdir -p "$(dirname "$nover")"
+  sed '/^SST_VERSION=/d' "$SST" >"$nover"
+  chmod +x "$nover"
+  env PATH="$FAKEBIN:$PATH" FAKE_CURL_DIR="$dir" "$nover" update --check \
+    >"$TMP/stdout" 2>"$TMP/stderr"
+  STATUS=$?
+  assert_eq "$STATUS" 2 "source without SST_VERSION exits 2"
+  assert_contains "$(cat "$TMP/stderr")" "reinstall" \
+    "source without SST_VERSION suggests reinstalling"
+}
+
+test_update_source() {
+  local dir="$TMP/release-source" target="$TMP/update-self/sst"
+  mkdir -p "$dir"
+  printf "#!/bin/bash\nSST_VERSION='0.1.1'\nprintf 'sst 0.1.1\\n'\n" >"$dir/sst"
+  (cd "$dir" && sha256sum sst >SHA256SUMS)
+
+  FAKE_CURL_DIR="$dir" run_update update --yes
+  assert_eq "$STATUS" 0 "source update succeeds"
+  assert_contains "$(cat "$target")" "SST_VERSION='0.1.1'" "source file is replaced"
+  assert_eq "$(stat -c %a "$target")" 755 "source file keeps executable mode"
+
+  printf "#!/bin/bash\nSST_VERSION='0.1.1'\nexit 1\n" >"$dir/sst"
+  (cd "$dir" && sha256sum sst >SHA256SUMS)
+  FAKE_CURL_DIR="$dir" run_update update --yes
+  assert_eq "$STATUS" 1 "broken replacement fails sanity check"
+  assert_eq "$(sha256sum "$target" | cut -d' ' -f1)" \
+    "$(sha256sum "$SST" | cut -d' ' -f1)" "old source file is restored"
+
+  local sudo_target="$TMP/sudo-source/sst" sudo_asset="$TMP/sudo-asset"
+  mkdir -p "$(dirname "$sudo_target")"
+  cp "$SST" "$sudo_target"
+  chmod +x "$sudo_target"
+  printf "#!/bin/bash\nSST_VERSION='0.1.1'\nprintf 'sst 0.1.1\\n'\n" >"$sudo_asset"
+  : >"$TMP/sudo.log"
+  FAKE_SUDO_LOG="$TMP/sudo.log" run_sourced \
+    _sst_apply_source "$sudo_asset" "$sudo_target" sudo
+  assert_eq "$STATUS" 0 "sudo source apply succeeds"
+  assert_file_contains "$TMP/sudo.log" "install" "sudo source apply uses sudo install"
+  assert_contains "$(cat "$sudo_target")" "SST_VERSION='0.1.1'" \
+    "sudo source target is replaced"
+
+  if (( EUID != 0 )); then
+    (
+      PATH=/nonexistent
+      # shellcheck disable=SC1090
+      source "$SST"
+      _sst_apply_source "$sudo_asset" "$sudo_target" sudo
+    ) >/dev/null 2>&1
+    STATUS=$?
+    assert_eq "$STATUS" 127 "source apply without sudo returns 127"
+  else
+    printf '# skip source sudo-missing test: running as root\n'
+  fi
+}
+
+test_update_interaction() {
+  local dir="$TMP/release-interaction" self="$TMP/update-self/sst"
+  mkdir -p "$dir"
+  printf "#!/bin/bash\nSST_VERSION='0.1.1'\nprintf 'sst 0.1.1\\n'\n" >"$dir/sst"
+  (cd "$dir" && sha256sum sst >SHA256SUMS)
+
+  : >"$TMP/sudo.log"
+  rm -f "$TMP/sudo.log"
+  FAKE_CURL_DIR="$dir" run_update update
+  assert_eq "$STATUS" 2 "non-interactive update without --yes exits 2"
+  assert_absent "$TMP/sudo.log" "non-interactive refusal runs no privileged command"
+
+  FAKE_CURL_DIR="$dir" run_update update --check --yes
+  assert_eq "$STATUS" 2 "--check with --yes exits 2"
+
+  local before
+  before=$(sha256sum "$self" | cut -d' ' -f1)
+  FAKE_CURL_DIR="$dir" run_update_tty n update
+  assert_eq "$STATUS" 0 "declining confirmation exits 0"
+  assert_eq "$(sha256sum "$self" | cut -d' ' -f1)" "$before" \
+    "declining confirmation leaves the file unchanged"
+
+  FAKE_CURL_DIR="$dir" run_update_tty y update
+  assert_eq "$STATUS" 0 "accepting confirmation applies the update"
+  assert_contains "$(cat "$self")" "SST_VERSION='0.1.1'" \
+    "accepted confirmation replaces the source file"
+}
+
+test_update_packages() {
+  local dir="$TMP/release-packages" state="$TMP/pkg-state"
+  mkdir -p "$dir"
+  printf 'dummy\n' >"$dir/opensst.deb"
+  printf 'dummy\n' >"$dir/opensst.rpm"
+  printf 'dummy\n' >"$dir/opensst.pkg.tar.zst"
+  (cd "$dir" && sha256sum opensst.deb opensst.rpm opensst.pkg.tar.zst >SHA256SUMS)
+
+  : >"$TMP/sudo.log"
+  printf '0.1.0\n' >"$state"
+
+  FAKE_CURL_DIR="$dir" FAKE_DPKG_OWNER=opensst FAKE_PKG_STATE="$state" \
+    FAKE_PKG_ASSET_VERSION=0.1.1 FAKE_DPKG_ASSET_VERSION=0.1.1 \
+    run_update update --yes
+  assert_eq "$STATUS" 0 "DEB update succeeds"
+  assert_file_contains "$TMP/sudo.log" "dpkg -i" "DEB uses dpkg -i"
+  assert_eq "$(grep -c 'dpkg -i' "$TMP/sudo.log")" 1 "DEB installs once"
+
+  printf '0.1.0\n' >"$state"
+  FAKE_CURL_DIR="$dir" FAKE_RPM_OWNER=opensst FAKE_PKG_STATE="$state" \
+    FAKE_PKG_ASSET_VERSION=0.1.1 FAKE_RPM_ASSET_VERSION=0.1.1 \
+    run_update update --yes
+  assert_eq "$STATUS" 0 "RPM update succeeds"
+  assert_file_contains "$TMP/sudo.log" "rpm -Uvh" "RPM uses rpm -Uvh"
+
+  printf '0.1.0\n' >"$state"
+  FAKE_CURL_DIR="$dir" FAKE_PACMAN_OWNER=opensst FAKE_PKG_STATE="$state" \
+    FAKE_PKG_ASSET_VERSION=0.1.1-1 FAKE_PACMAN_ASSET_VERSION=0.1.1-1 \
+    run_update update --yes
+  assert_eq "$STATUS" 0 "pacman update succeeds"
+  assert_file_contains "$TMP/sudo.log" "pacman -U --noconfirm" "pacman uses pacman -U"
+
+  printf '0.1.0\n' >"$state"
+  FAKE_CURL_DIR="$dir" FAKE_DPKG_OWNER=opensst FAKE_PKG_STATE="$state" \
+    FAKE_PKG_ASSET_VERSION=0.1.1 FAKE_DPKG_ASSET_VERSION=0.1.1 FAKE_PKG_FAIL=1 \
+    run_update update --yes
+  assert_eq "$STATUS" 1 "package install failure is reported"
+  assert_eq "$(cat "$state")" 0.1.0 "failed install does not change state"
+
+  printf '0.1.0\n' >"$state"
+  FAKE_CURL_DIR="$dir" FAKE_DPKG_OWNER=opensst FAKE_PKG_STATE="$state" \
+    FAKE_PKG_ASSET_VERSION=0.1.0 FAKE_DPKG_ASSET_VERSION=0.1.1 \
+    run_update update --yes
+  assert_eq "$STATUS" 1 "post-install version mismatch fails"
+
+  if (( EUID != 0 )); then
+    (
+      PATH=/nonexistent
+      # shellcheck disable=SC1090
+      source "$SST"
+      _sst_run_privileged true
+    ) >/dev/null 2>&1
+    STATUS=$?
+    assert_eq "$STATUS" 127 "missing sudo returns 127"
+  else
+    printf '# skip missing sudo test: running as root\n'
+  fi
 }
 
 test_usage_errors() {
@@ -127,6 +588,9 @@ run_sourced() {
   (
     PATH="$FAKEBIN:$PATH"
     export FAKE_SSH_G_LOG="$GLOG"
+    if [[ -n ${TEST_LOCALE-} ]]; then
+      export LC_ALL="$TEST_LOCALE"
+    fi
     # shellcheck disable=SC1090
     source "$SST"
     "$func" "$@"
@@ -146,6 +610,12 @@ test_project_names() {
     run_sourced _sst_valid_project "$name"
     assert_eq "$STATUS" 1 "project name '$name' is rejected"
   done
+  for name in 'Wörk' 'ｗｏｒｋ'; do
+    TEST_LOCALE=en_US.UTF-8 run_sourced _sst_valid_project "$name"
+    assert_eq "$STATUS" 1 "project name '$name' is rejected under a UTF-8 locale"
+  done
+  TEST_LOCALE=en_US.UTF-8 run_sourced _sst_valid_project Work
+  assert_eq "$STATUS" 0 "ASCII project names stay valid under a UTF-8 locale"
 }
 
 test_ssh_validation_accepts() {
@@ -167,6 +637,14 @@ test_ssh_validation_accepts() {
 
   run_sourced _sst_validate_ssh -- devbox
   assert_eq "$STATUS" 0 "-- terminates options and leaves one destination"
+
+  run_sourced _sst_validate_ssh -4p2222 devbox
+  assert_eq "$STATUS" 0 "clustered flags with an attached value are accepted"
+
+  run_sourced _sst_validate_ssh devbox
+  assert_eq "$STATUS" 0 "default SSH configuration is accepted"
+  assert_file_contains "$GLOG" "devbox true" \
+    "ssh -G probe includes a command so sessiontype-specific RemoteCommand is evaluated"
 }
 
 test_ssh_validation_rejects() {
@@ -178,6 +656,12 @@ test_ssh_validation_rejects() {
 
   run_sourced _sst_validate_ssh devbox -p
   assert_eq "$STATUS" 1 "missing option value is rejected"
+
+  local flag
+  for flag in -t -T -4t; do
+    run_sourced _sst_validate_ssh "$flag" devbox
+    assert_eq "$STATUS" 1 "user $flag is rejected because sst owns terminal allocation"
+  done
 
   (
     PATH="$FAKEBIN:$PATH"
@@ -258,6 +742,15 @@ test_list_and_kill() {
 
   run_sst list devbox extra
   assert_eq "$STATUS" 2 "list rejects a positional remote command"
+
+  run_sst list -t devbox
+  assert_eq "$STATUS" 2 "list rejects a user-requested PTY"
+  assert_contains "$ERROR" "controls terminal allocation" "list explains the -t rejection"
+  assert_eq "$(connection_count)" 0 "rejected list connects to nothing"
+
+  run_sst kill -T devbox Work
+  assert_eq "$STATUS" 2 "kill rejects a user-requested PTY"
+  assert_eq "$(connection_count)" 0 "rejected kill connects to nothing"
 }
 
 test_management_never_retries() {
@@ -335,6 +828,11 @@ test_open_operation() {
 
   run_sst_tty 0 0 open devbox 'Work;id'
   assert_eq "$STATUS" 2 "open rejects an unsafe project name"
+  assert_eq "$(connection_count)" 0 "rejected open connects to nothing"
+
+  run_sst_tty 0 0 open -T devbox Work
+  assert_eq "$STATUS" 2 "open rejects a user-requested no-PTY option"
+  assert_contains "$OUTPUT" "controls terminal allocation" "open explains the -T rejection"
   assert_eq "$(connection_count)" 0 "rejected open connects to nothing"
 
   run_sst_tty 0 1 open devbox Work
@@ -446,6 +944,81 @@ test_package_version_validation() {
   "$ROOT/packaging/build-rpm.sh" v1.0.0 "$TMP" >"$TMP/stdout" 2>"$TMP/stderr"
   STATUS=$?
   assert_eq "$STATUS" 2 "rpm build rejects a version with a tag prefix"
+
+  "$ROOT/packaging/build-deb.sh" 9.9.9 "$TMP" >"$TMP/stdout" 2>"$TMP/stderr"
+  STATUS=$?
+  assert_eq "$STATUS" 2 "deb build rejects a version that differs from SST_VERSION"
+
+  "$ROOT/packaging/build-rpm.sh" 9.9.9 "$TMP" >"$TMP/stdout" 2>"$TMP/stderr"
+  STATUS=$?
+  assert_eq "$STATUS" 2 "rpm build rejects a version that differs from SST_VERSION"
+
+  "$ROOT/packaging/build-arch.sh" 9.9.9 "$TMP" >"$TMP/stdout" 2>"$TMP/stderr"
+  STATUS=$?
+  assert_eq "$STATUS" 2 "arch build rejects a version that differs from SST_VERSION"
+
+  assert_file_contains "$ROOT/packaging/build-deb.sh" "Depends: bash, openssh-client, curl" \
+    "deb metadata depends on curl"
+  assert_file_contains "$ROOT/packaging/build-rpm.sh" "Requires: curl" \
+    "rpm metadata requires curl"
+}
+
+test_arch_package() {
+  if ! command -v makepkg >/dev/null 2>&1 || ! command -v bsdtar >/dev/null 2>&1 \
+    || (( EUID == 0 )); then
+    printf '# skip arch package test: makepkg/bsdtar is unavailable or running as root\n'
+    return
+  fi
+  local out="$TMP/arch"
+  mkdir -p "$out"
+  "$ROOT/packaging/build-arch.sh" 0.1.0 "$out" >"$TMP/stdout" 2>"$TMP/stderr"
+  STATUS=$?
+  assert_eq "$STATUS" 0 "arch package build succeeds"
+  local pkg="$out/opensst-0.1.0-1-any.pkg.tar.zst"
+  assert_file "$pkg" "arch package has the expected filename"
+  assert_contains "$(bsdtar -xOf "$pkg" .PKGINFO)" "pkgname = opensst" \
+    "arch PKGINFO names opensst"
+  assert_contains "$(bsdtar -xOf "$pkg" .PKGINFO)" "pkgver = 0.1.0-1" \
+    "arch PKGINFO records version"
+  assert_contains "$(bsdtar -tf "$pkg")" "usr/bin/sst" \
+    "arch package installs /usr/bin/sst"
+}
+
+test_release_assets() {
+  local dist="$TMP/release-assets"
+  mkdir -p "$dist"
+  cp "$SST" "$dist/sst"
+  chmod +x "$dist/sst"
+  printf 'deb\n' >"$dist/opensst_0.1.0_all.deb"
+  printf 'rpm\n' >"$dist/opensst-0.1.0-1.noarch.rpm"
+  printf 'arch\n' >"$dist/opensst-0.1.0-1-any.pkg.tar.zst"
+
+  "$ROOT/packaging/release-assets.sh" 0.1.0 "$dist" >"$TMP/stdout" 2>"$TMP/stderr"
+  STATUS=$?
+  assert_eq "$STATUS" 0 "release assets script succeeds"
+  local file
+  for file in opensst.deb opensst.rpm opensst.pkg.tar.zst SHA256SUMS; do
+    assert_file "$dist/$file" "release assets creates $file"
+  done
+  assert_file_contains "$dist/SHA256SUMS" "opensst.deb" \
+    "checksums include stable DEB alias"
+  assert_file_contains "$dist/SHA256SUMS" "opensst.pkg.tar.zst" \
+    "checksums include stable Arch alias"
+  assert_file_contains "$dist/SHA256SUMS" "  sst" \
+    "checksums include the raw source asset"
+  assert_file_contains "$dist/SHA256SUMS" "opensst_0.1.0_all.deb" \
+    "checksums include the versioned DEB"
+
+  printf "#!/bin/bash\nSST_VERSION='9.9.9'\n" >"$dist/sst"
+  chmod +x "$dist/sst"
+  "$ROOT/packaging/release-assets.sh" 0.1.0 "$dist" >"$TMP/stdout" 2>"$TMP/stderr"
+  STATUS=$?
+  assert_eq "$STATUS" 1 "release assets refuses a raw script with the wrong version"
+
+  rm -f "$dist/opensst.rpm"
+  "$ROOT/packaging/release-assets.sh" 0.1.0 "$dist" >"$TMP/stdout" 2>"$TMP/stderr"
+  STATUS=$?
+  assert_eq "$STATUS" 1 "release assets refuses a missing versioned package"
 }
 
 test_packages() {
@@ -500,7 +1073,42 @@ connection_count_calls() {
   fi
 }
 
+test_release_workflow() {
+  local release="$ROOT/.github/workflows/release.yml"
+
+  assert_file_contains "$release" "workflow_dispatch" "release is manual only"
+  assert_file_contains "$release" 'git config user.name' "release configures a Git committer name"
+  assert_file_contains "$release" 'git config user.email' "release configures a Git committer email"
+  assert_file_order "$release" 'git config user.email' 'git tag -a' \
+    "release configures Git identity before creating the annotated tag"
+  assert_file_contains "$release" 'git cat-file -t' "release requires the existing tag to be annotated"
+  assert_file_contains "$release" '--verify-tag' "release verifies the tag before publishing"
+  assert_file_contains "$release" 'SHA256SUMS' "release publishes checksums"
+  assert_file_contains "$release" "SST_VERSION" "release validates the embedded version"
+  assert_file_contains "$release" "package-arch" "release builds an Arch package"
+  assert_file_contains "$release" "archlinux:latest" "Arch build uses an Arch container"
+  assert_file_contains "$release" "release-assets.sh" "release creates stable asset aliases"
+  assert_file_contains "$release" "opensst.pkg.tar.zst" "release publishes the stable Arch alias"
+}
+
+test_ci_workflow() {
+  local ci="$ROOT/.github/workflows/ci.yml"
+  assert_file_contains "$ci" "SST_VERSION" "CI reads the embedded version"
+  assert_file_contains "$ci" "package-arch" "CI builds an Arch package"
+  assert_file_contains "$ci" "archlinux:latest" "CI uses an Arch container"
+  assert_file_contains "$ci" "pacman -U" "CI smoke-tests the Arch package"
+}
+
 test_help
+test_version
+test_version_helpers
+test_update_detection
+test_update_version_readers
+test_update_download
+test_update_check
+test_update_source
+test_update_interaction
+test_update_packages
 test_usage_errors
 test_project_names
 test_ssh_validation_accepts
@@ -515,6 +1123,10 @@ test_open_reconnects
 test_source_install
 test_package_version_validation
 test_packages
+test_arch_package
+test_release_assets
+test_release_workflow
+test_ci_workflow
 
 test_documentation() {
   local readme="$ROOT/README.md" agents="$ROOT/AGENTS.md" license="$ROOT/LICENSE"
@@ -530,11 +1142,19 @@ test_documentation() {
     '30 seconds' \
     '2 seconds' \
     'Serverless SST' \
-    'new-session -A -D'; do
+    'new-session -A -D' \
+    '-t/-T are rejected' \
+    'sst update' \
+    'sst update --check' \
+    'opensst.pkg.tar.zst' \
+    'pacman -U' \
+    'curl or wget' \
+    'checksums are not signatures'; do
     assert_file_contains "$readme" "$needle" "README documents '$needle'"
   done
 
-  for needle in 'Release' 'Version History' 'explicit' 'workflow_dispatch' 'make check' '0.1.0'; do
+  for needle in 'Release' 'Version History' 'explicit' 'workflow_dispatch' 'make check' \
+    '0.1.0' 'sst update' 'SST_VERSION' 'pacman' 'stable aliases'; do
     assert_file_contains "$agents" "$needle" "AGENTS documents '$needle'"
   done
 

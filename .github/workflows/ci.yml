@@ -22,12 +22,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Read embedded version
+        run: |
+          version=$(sed -n "s/^SST_VERSION='\([0-9.]*\)'$/\1/p" bin/sst)
+          echo "VERSION=$version" >>"$GITHUB_ENV"
       - name: Build DEB
-        run: packaging/build-deb.sh 0.1.0 dist
+        run: packaging/build-deb.sh "$VERSION" dist
       - name: Install and smoke test DEB
         run: |
           sudo apt-get update
-          sudo apt-get install -y ./dist/opensst_0.1.0_all.deb
+          sudo apt-get install -y "./dist/opensst_${VERSION}_all.deb"
           sst --help
       - name: Upload DEB artifact
         uses: actions/upload-artifact@v4
@@ -42,19 +46,57 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Read embedded version
+        run: |
+          version=$(sed -n "s/^SST_VERSION='\([0-9.]*\)'$/\1/p" bin/sst)
+          echo "VERSION=$version" >>"$GITHUB_ENV"
       - name: Install RPM tooling
         run: |
           sudo apt-get update
           sudo apt-get install -y rpm
       - name: Build RPM
-        run: packaging/build-rpm.sh 0.1.0 dist
+        run: packaging/build-rpm.sh "$VERSION" dist
       - name: Install and smoke test RPM in Fedora
         run: |
           docker run --rm -v "$PWD/dist:/dist:ro" fedora:latest \
-            bash -c 'dnf install -y /dist/opensst-0.1.0-1.noarch.rpm && sst --help'
+            bash -c "dnf install -y /dist/opensst-${VERSION}-1.noarch.rpm && sst --help"
       - name: Upload RPM artifact
         uses: actions/upload-artifact@v4
         with:
           name: opensst-rpm
           path: dist/*.rpm
+          retention-days: 7
+
+  package-arch:
+    name: Arch package
+    needs: test
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read embedded version
+        run: |
+          version=$(sed -n "s/^SST_VERSION='\([0-9.]*\)'$/\1/p" bin/sst)
+          echo "VERSION=$version" >>"$GITHUB_ENV"
+      - name: Install build tools
+        run: |
+          pacman-key --init
+          pacman-key --populate archlinux
+          pacman -Sy --noconfirm archlinux-keyring
+          pacman -Syu --noconfirm base-devel git
+      - name: Build Arch package as a non-root user
+        run: |
+          useradd -m builder
+          chown -R builder "$GITHUB_WORKSPACE"
+          su - builder -c "cd '$GITHUB_WORKSPACE' && packaging/build-arch.sh '$VERSION' dist"
+      - name: Install and smoke test Arch package
+        run: |
+          pacman -U --noconfirm "dist/opensst-${VERSION}-1-any.pkg.tar.zst"
+          sst --help
+          sst --version
+      - name: Upload Arch artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: opensst-arch
+          path: dist/*.pkg.tar.zst
           retention-days: 7
