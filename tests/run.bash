@@ -516,5 +516,34 @@ test_source_install
 test_package_version_validation
 test_packages
 
+test_documentation() {
+  local readme="$ROOT/README.md" agents="$ROOT/AGENTS.md" license="$ROOT/LICENSE"
+  local needle
+  for needle in \
+    'sst open [ssh options] <host> <project>' \
+    'sst list [ssh options] <host>' \
+    'sst kill [ssh options] <host> <project>' \
+    '/usr/local/bin' \
+    '/usr/bin/sst' \
+    'opensst_0.1.0_all.deb' \
+    'opensst-0.1.0-1.noarch.rpm' \
+    '30 seconds' \
+    '2 seconds' \
+    'Serverless SST' \
+    'new-session -A -D'; do
+    assert_file_contains "$readme" "$needle" "README documents '$needle'"
+  done
+
+  for needle in 'Release' 'Version History' 'explicit' 'workflow_dispatch' 'make check' '0.1.0'; do
+    assert_file_contains "$agents" "$needle" "AGENTS documents '$needle'"
+  done
+
+  for needle in 'MIT License' '2026' 'duanhongyi'; do
+    assert_file_contains "$license" "$needle" "LICENSE contains '$needle'"
+  done
+}
+
+test_documentation
+
 printf '\n%d tests, %d failures\n' "$tests" "$failures"
 (( failures == 0 ))
