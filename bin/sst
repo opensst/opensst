@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -u
+
+_sst_usage() {
+  cat <<'EOF'
+Usage:
+  sst open [ssh options] <host> <project>
+  sst list [ssh options] <host>
+  sst kill [ssh options] <host> <project>
+  sst --help
+
+Manage reconnectable remote tmux sessions over SSH.
+
+  open   Create or attach to a named remote tmux session, reconnecting
+         when a long-lived connection drops.
+  list   List remote tmux sessions.
+  kill   Kill one exact remote tmux session.
+
+Project names must match [A-Za-z0-9][A-Za-z0-9_-]*.
+SSH options are passed to ssh before the host. The host must be the only
+positional argument; remote commands are rejected.
+EOF
+}
+
+_sst_main() {
+  case ${1-} in
+    -h|--help) _sst_usage ;;
+    '') _sst_usage >&2; return 2 ;;
+    *) _sst_usage >&2; return 2 ;;
+  esac
+}
+
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+  _sst_main "$@"
+fi

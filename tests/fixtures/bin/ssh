@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Fake ssh used by the test suite. It never contacts a real host.
+set -u
+
+args=("$@")
+is_config_probe=0
+for arg in "${args[@]}"; do
+  if [[ $arg == -G ]]; then
+    is_config_probe=1
+  fi
+done
+
+if (( is_config_probe )); then
+  if [[ -n ${FAKE_SSH_G_LOG-} ]]; then
+    { printf '%q ' "${args[@]}"; printf '\n'; } >>"$FAKE_SSH_G_LOG"
+  fi
+  if [[ ${FAKE_SSH_G_FAIL-0} == 1 ]]; then
+    printf 'fake ssh: configuration resolution failed\n' >&2
+    exit 255
+  fi
+  printf 'remotecommand %s\n' "${FAKE_SSH_G_REMOTE_COMMAND:-none}"
+  exit 0
+fi
+
+if [[ -n ${FAKE_SSH_LOG-} ]]; then
+  { printf '%q ' "${args[@]}"; printf '\n'; } >>"$FAKE_SSH_LOG"
+fi
+
+if [[ ${FAKE_SSH_EXEC_REMOTE-0} == 1 ]]; then
+  remote=${args[${#args[@]}-1]}
+  PATH=/nonexistent /bin/bash -c "$remote"
+  exit $?
+fi
+
+exit "${FAKE_SSH_EXIT:-0}"
