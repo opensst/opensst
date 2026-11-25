@@ -90,8 +90,99 @@ test_usage_errors() {
   assert_contains "$ERROR" "sst kill" "unknown-subcommand usage is written to stderr"
 }
 
+FAKEBIN="$ROOT/tests/fixtures/bin"
+GLOG="$TMP/ssh-g.log"
+
+run_sourced() {
+  local func=$1
+  shift
+  : >"$TMP/stdout"
+  : >"$TMP/stderr"
+  : >"$GLOG"
+  (
+    PATH="$FAKEBIN:$PATH"
+    export FAKE_SSH_G_LOG="$GLOG"
+    # shellcheck disable=SC1090
+    source "$SST"
+    "$func" "$@"
+  ) >"$TMP/stdout" 2>"$TMP/stderr"
+  STATUS=$?
+  OUTPUT=$(<"$TMP/stdout")
+  ERROR=$(<"$TMP/stderr")
+}
+
+test_project_names() {
+  local name rc
+  for name in Work project-x api_2 Work-tab1 A; do
+    run_sourced _sst_valid_project "$name"
+    assert_eq "$STATUS" 0 "project name '$name' is accepted"
+  done
+  for name in '' -bad .hidden 'Work;id' 'Work space' 'Work/other'; do
+    run_sourced _sst_valid_project "$name"
+    assert_eq "$STATUS" 1 "project name '$name' is rejected"
+  done
+}
+
+test_ssh_validation_accepts() {
+  run_sourced _sst_validate_ssh -p 2222 devbox
+  assert_eq "$STATUS" 0 "separate -p value is accepted"
+  assert_file_contains "$GLOG" "-p 2222 devbox" "ssh -G probe keeps separate -p value"
+
+  run_sourced _sst_validate_ssh -p2222 devbox
+  assert_eq "$STATUS" 0 "attached -p value is accepted"
+
+  run_sourced _sst_validate_ssh -Jjump@example devbox
+  assert_eq "$STATUS" 0 "attached -J value is accepted"
+
+  run_sourced _sst_validate_ssh -J jump@example devbox
+  assert_eq "$STATUS" 0 "separate -J value is accepted"
+
+  run_sourced _sst_validate_ssh -oRemoteCommand=none devbox
+  assert_eq "$STATUS" 0 "attached RemoteCommand=none is accepted"
+
+  run_sourced _sst_validate_ssh -- devbox
+  assert_eq "$STATUS" 0 "-- terminates options and leaves one destination"
+}
+
+test_ssh_validation_rejects() {
+  run_sourced _sst_validate_ssh
+  assert_eq "$STATUS" 1 "missing destination is rejected"
+
+  run_sourced _sst_validate_ssh devbox extra
+  assert_eq "$STATUS" 1 "positional remote command is rejected"
+
+  run_sourced _sst_validate_ssh devbox -p
+  assert_eq "$STATUS" 1 "missing option value is rejected"
+
+  (
+    PATH="$FAKEBIN:$PATH"
+    export FAKE_SSH_G_LOG="$GLOG" FAKE_SSH_G_REMOTE_COMMAND='printf bad'
+    # shellcheck disable=SC1090
+    source "$SST"
+    _sst_validate_ssh -o RemoteCommand='printf bad' devbox
+  ) >/dev/null 2>&1
+  STATUS=$?
+  assert_eq "$STATUS" 1 "unsafe effective RemoteCommand is rejected"
+
+  run_sourced _sst_validate_ssh devbox
+  assert_eq "$STATUS" 0 "default RemoteCommand none is accepted"
+
+  (
+    PATH="$FAKEBIN:$PATH"
+    export FAKE_SSH_G_LOG="$GLOG" FAKE_SSH_G_FAIL=1
+    # shellcheck disable=SC1090
+    source "$SST"
+    _sst_validate_ssh devbox
+  ) >/dev/null 2>&1
+  STATUS=$?
+  assert_eq "$STATUS" 1 "ssh -G failure is rejected"
+}
+
 test_help
 test_usage_errors
+test_project_names
+test_ssh_validation_accepts
+test_ssh_validation_rejects
 
 printf '\n%d tests, %d failures\n' "$tests" "$failures"
 (( failures == 0 ))

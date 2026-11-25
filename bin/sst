@@ -22,6 +22,80 @@ positional argument; remote commands are rejected.
 EOF
 }
 
+_sst_valid_project() {
+  local name=${1-}
+  [[ $name =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]]
+}
+
+# Validate an SSH argument vector before appending a fixed remote command.
+# Accepts only options followed by exactly one destination.
+_sst_validate_ssh() {
+  local -a argv=("$@")
+  local value_options='BbcDEeFIiJLlmOoPpQRSWw'
+  local i=0 dest='' arg cluster ch value line
+  local output
+
+  while (( i < ${#argv[@]} )); do
+    arg=${argv[i]}
+    if [[ $arg == '--' ]]; then
+      ((i++))
+      while (( i < ${#argv[@]} )); do
+        if [[ -n $dest ]]; then
+          return 1
+        fi
+        dest=${argv[i]}
+        ((i++))
+      done
+      break
+    fi
+
+    if [[ $arg == -* && $arg != - ]]; then
+      cluster=${arg#-}
+      local j=0
+      while (( j < ${#cluster} )); do
+        ch=${cluster:j:1}
+        if [[ $value_options == *"$ch"* ]]; then
+          if (( j + 1 < ${#cluster} )); then
+            j=${#cluster}
+          else
+            ((i++))
+            if (( i >= ${#argv[@]} )); then
+              return 1
+            fi
+            value=${argv[i]}
+            j=${#cluster}
+          fi
+        else
+          ((j++))
+        fi
+      done
+    else
+      if [[ -n $dest ]]; then
+        return 1
+      fi
+      dest=$arg
+    fi
+    ((i++))
+  done
+
+  [[ -n $dest ]] || return 1
+
+  if ! output=$(command ssh -G "${argv[@]}" 2>/dev/null); then
+    return 1
+  fi
+
+  while IFS= read -r line; do
+    if [[ $line =~ ^remotecommand[[:space:]]+(.*)$ ]]; then
+      value=${BASH_REMATCH[1]}
+      if [[ $value != none ]]; then
+        return 1
+      fi
+    fi
+  done <<<"$output"
+
+  return 0
+}
+
 _sst_main() {
   case ${1-} in
     -h|--help) _sst_usage ;;
