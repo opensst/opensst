@@ -7,6 +7,7 @@ over SSH. The project is `opensst`; the installed command is `sst`.
 
 ```text
 bin/sst                  Runtime implementation; the complete CLI
+install.sh               Self-contained installer for the latest or a pinned release
 tests/run.bash           Dependency-light Bash test suite
 tests/fixtures/bin/ssh   Fake SSH used by tests; never contacts a host
 tests/fixtures/bin/      Fake package tools, downloaders, and sudo for update tests
@@ -27,9 +28,9 @@ Makefile                 Test, check, install, uninstall, package targets
 make check                              # syntax checks + tests
 make install PREFIX=/usr/local          # source install
 make uninstall PREFIX=/usr/local        # source uninstall
-make package-deb VERSION=0.1.0          # build dist/opensst_0.1.0_all.deb
-make package-rpm VERSION=0.1.0          # build dist/opensst-0.1.0-1.noarch.rpm
-make package-arch VERSION=0.1.0         # build dist/opensst-0.1.0-1-any.pkg.tar.zst
+make package-deb VERSION=0.2.0          # build dist/opensst_0.2.0_all.deb
+make package-rpm VERSION=0.2.0          # build dist/opensst-0.2.0-1.noarch.rpm
+make package-arch VERSION=0.2.0         # build dist/opensst-0.2.0-1-any.pkg.tar.zst
 bash tests/run.bash                     # tests only
 ```
 
@@ -82,6 +83,27 @@ host. The fake SSH fixture is the only SSH executable tests may reach.
 - All update tests stay offline: fake `curl`/`wget`, fake package tools, fake
   `sudo`, and temporary directories only.
 
+## Installer safety invariants
+
+- `install.sh` is self-contained and safe to pipe into `bash`; it must not read
+  adjacent files or require a checkout.
+- Detect the method by available tools in this order: pacman, apt-get/dpkg,
+  dnf/yum/rpm, then the raw source fallback.
+- Default to `releases/latest/download`; a pinned `--version` uses
+  `releases/download/v<version>`. Never query the GitHub API.
+- Download only over HTTPS, verify exactly one `SHA256SUMS` entry, and refuse
+  to install on mismatch or a missing checksum tool.
+- Package installs go through `pacman -U`, `apt-get`/`dpkg`, or
+  `dnf`/`yum`/`rpm`. Never write `/usr/bin/sst` directly.
+- The source fallback installs atomically under `<prefix>/bin/sst`, keeps a
+  backup, and restores it if the post-install `--version` check fails.
+- Invoke `sudo` only for the install step; never for downloads or checksum
+  verification. A writable `--prefix` must not use sudo.
+- `--prefix` applies only to the source fallback; combining it with a detected
+  package manager is a usage error.
+- Installer tests stay offline and use fake downloaders, package managers, and
+  sudo.
+
 ## Packaging rules
 
 - Package name: `opensst`.
@@ -96,9 +118,11 @@ host. The fake SSH fixture is the only SSH executable tests may reach.
   Packages are GitHub Release assets with `SHA256SUMS`.
 - Do not add automatic privilege escalation to Makefile targets.
 - Keep DEB, RPM, and pacman paths aligned at `/usr/bin/sst`.
-- Every release publishes stable aliases (`sst`, `opensst.deb`, `opensst.rpm`,
-  `opensst.pkg.tar.zst`, `SHA256SUMS`) next to the versioned assets. Stable
-  aliases are the update contract; do not rename them.
+- Every release publishes stable aliases (`sst`, `install.sh`, `opensst.deb`,
+  `opensst.rpm`, `opensst.pkg.tar.zst`, `SHA256SUMS`) next to the versioned
+  assets. Stable aliases are the update and install contract; do not rename
+  them.
+- `install.sh` is archived in `SHA256SUMS` alongside the package assets.
 - Release versions must be stable `MAJOR.MINOR.PATCH`; package builders reject
   an argument that differs from `SST_VERSION`.
 
@@ -114,7 +138,7 @@ package artifacts for inspection.
 ## Release process
 
 Release versions are stable `MAJOR.MINOR.PATCH` identifiers. Tags are
-`v<version>`, for example `v0.1.0`. The initial version is `0.1.0`.
+`v<version>`, for example `v0.2.0`. The initial version is `0.1.0`.
 
 Releases are deliberately manual. Ordinary pushes and pull requests never
 create tags or GitHub Releases.
@@ -134,9 +158,11 @@ create tags or GitHub Releases.
 6. Wait for validation, test, DEB smoke-test, RPM smoke-test, and Arch
    smoke-test jobs to pass.
 7. Verify the annotated `v<version>` tag, the GitHub Release notes, and the
-   uploaded `sst`, `opensst.deb`, `opensst.rpm`, `opensst.pkg.tar.zst`,
-   versioned package assets, and `SHA256SUMS`. Verify the stable aliases match
-   the versioned files and that `sst --version` reports the release version.
+   uploaded `sst`, `install.sh`, `opensst.deb`, `opensst.rpm`,
+   `opensst.pkg.tar.zst`, versioned package assets, and `SHA256SUMS`. Verify
+   the stable aliases match the versioned files, that
+   `releases/latest/download/install.sh` is reachable, and that `sst --version`
+   reports the release version.
 8. When appropriate, verify installation and a real `sst update` from the
    published assets.
 
@@ -152,6 +178,7 @@ authorization.
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 0.2.0 | 2026-11-25 | Add `install.sh` as a release asset with latest/pinned installs, package-manager detection, SHA-256 verification, and a source fallback. README now documents install.sh as the only installation method. |
 | 0.1.0 | 2026-11-25 | Initial CLI: open/list/kill, reconnect, explicit `sst update` for source/DEB/RPM/pacman installs, source install, DEB/RPM/Arch packages, CI and manual release workflow. |
 
 ## Documentation rules

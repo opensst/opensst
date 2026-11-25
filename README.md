@@ -17,8 +17,9 @@ it does not depend on Omarchy, Ghostty, Python, Mosh, autossh, or systemd.
 - Automatic reconnect after a dropped interactive session.
 - Explicit `sst update`, which detects the installation method and upgrades
   through the matching package manager.
-- Source installation, native DEB, RPM, and pacman packages, and a single
-  executable Bash script with no runtime configuration file.
+- A self-contained `install.sh` that installs the matching DEB, RPM, or pacman
+  release package and falls back to the raw executable; `sst` itself is a
+  single Bash script with no runtime configuration file.
 - Exact session targeting and explicit rejection of unsafe SSH arguments.
 - A test suite that uses a fake SSH executable and never contacts a real host.
 
@@ -28,6 +29,8 @@ Local requirements:
 
 - Linux with Bash (arrays, `[[ ... ]]`, `SECONDS`).
 - An OpenSSH client with `ssh -G` support.
+- For installation and updates: `curl` or `wget`, `sha256sum`, and `sudo` for
+  system paths.
 
 Remote requirements:
 
@@ -39,81 +42,49 @@ tmux is required on the remote host, not on the machine running `sst`.
 
 ## Installation
 
-Choose **one** installation method. Do not install both a source build under
-`/usr/local/bin` and a distro package under `/usr/bin`; two copies of `sst`
-would make upgrades and command resolution ambiguous.
-
-### From source (installs `/usr/local/bin/sst`)
+Install the latest release:
 
 ```sh
-git clone https://github.com/opensst/opensst.git
-cd opensst
-sudo make install
-sst --help
+curl -fsSL https://github.com/opensst/opensst/releases/latest/download/install.sh | bash
 ```
 
-For a user-level installation instead:
+The installer detects the available package manager and installs the matching
+release package:
+
+| System | Package manager | Installed at |
+|---|---|---|
+| Arch | `pacman -U` | `/usr/bin/sst` |
+| Debian, Ubuntu | `apt-get install` (or `dpkg -i`) | `/usr/bin/sst` |
+| Fedora, RHEL | `dnf install`, `yum localinstall`, or `rpm -Uvh` | `/usr/bin/sst` |
+| other Linux | raw `sst` executable | `/usr/local/bin/sst` |
+
+The installer downloads only from GitHub Releases over HTTPS, verifies the
+chosen asset against `SHA256SUMS`, and uses `sudo` only for the install step.
+Package-managed files are upgraded through their package manager, never
+overwritten directly.
+
+To install a specific stable version:
 
 ```sh
-make install PREFIX="$HOME/.local"
-sst --help          # requires ~/.local/bin in PATH
+curl -fsSL https://github.com/opensst/opensst/releases/latest/download/install.sh | bash -s -- --version 0.2.0
 ```
 
-Source installs place the executable at `/usr/local/bin/sst` by default.
-`PREFIX` and `DESTDIR` are supported. Installing a package instead places it
-at `/usr/bin/sst`.
+Use only one installation method. Do not mix a package install under
+`/usr/bin` with a source fallback under `/usr/local/bin`; check which executable
+your shell resolves with `type -a sst`.
 
-Uninstall a source installation with the matching prefix:
+Uninstall with the command matching the detected installation:
 
 ```sh
-sudo make uninstall                       # /usr/local/bin/sst
-make uninstall PREFIX="$HOME/.local"      # ~/.local/bin/sst
+sudo apt remove opensst           # DEB
+sudo dnf remove opensst           # RPM
+sudo pacman -R opensst            # Arch
+sudo rm -f /usr/local/bin/sst     # source fallback
 ```
 
-### DEB package
-
-Download `opensst_0.1.0_all.deb` from the
-[latest release](https://github.com/opensst/opensst/releases), then install it
-with your package manager so dependencies are resolved:
-
-```sh
-sudo apt install ./opensst_0.1.0_all.deb
-sst --help
-```
-
-The package installs `/usr/bin/sst` and depends on `bash`, `openssh-client`,
-and `curl`. Remove it with `sudo apt remove opensst`.
-
-### RPM package
-
-Download `opensst-0.1.0-1.noarch.rpm` from the same release page:
-
-```sh
-sudo dnf install ./opensst-0.1.0-1.noarch.rpm
-sst --help
-```
-
-The package installs `/usr/bin/sst` and depends on `bash`, `openssh-clients`,
-and `curl`. Remove it with `sudo dnf remove opensst`.
-
-### Arch package
-
-Download `opensst.pkg.tar.zst` (or the versioned
-`opensst-0.1.0-1-any.pkg.tar.zst`) from the same release page:
-
-```sh
-sudo pacman -U ./opensst.pkg.tar.zst
-sst --help
-```
-
-The package installs `/usr/bin/sst` and declares `bash`, `openssh`, and `curl`
-as dependencies. Remove it with `sudo pacman -R opensst`. Updates do not
-require archlinuxcn or an AUR helper; `sst update` downloads the current
-release package and installs it locally with `pacman -U`.
-
-DEB, RPM, and Arch packages are release assets; this project does not host an
-apt, dnf, or pacman repository. Package artifacts are architecture-independent
-(`all` / `noarch` / `any`), and SHA256 checksums are published next to them.
+The installer follows the same trust boundary as `sst update`: the Release
+channel is trusted over HTTPS, and `SHA256SUMS` detects corruption but is not a
+signature.
 
 ## Usage
 
@@ -276,9 +247,9 @@ named `opensst` even though the installed command is `sst`.
 
 ```sh
 make check                 # Bash syntax checks plus the full test suite
-make package-deb VERSION=0.1.0
-make package-rpm VERSION=0.1.0
-make package-arch VERSION=0.1.0
+make package-deb VERSION=0.2.0
+make package-rpm VERSION=0.2.0
+make package-arch VERSION=0.2.0
 ```
 
 Tests run the real executable with a fake `ssh` on `PATH`; they never contact

@@ -15,16 +15,25 @@ fi
 dist=$(cd -- "$dist" && pwd)
 
 raw="$dist/sst"
+install="$dist/install.sh"
 deb="$dist/opensst_${version}_all.deb"
 rpm="$dist/opensst-${version}-1.noarch.rpm"
 arch="$dist/opensst-${version}-1-any.pkg.tar.zst"
 
-for file in "$raw" "$deb" "$rpm" "$arch"; do
+for file in "$raw" "$install" "$deb" "$rpm" "$arch"; do
   if [[ ! -f $file ]]; then
     printf 'release-assets: missing %s\n' "${file#"$dist"/}" >&2
     exit 1
   fi
 done
+if [[ ! -x $install ]]; then
+  printf 'release-assets: install.sh is not executable\n' >&2
+  exit 1
+fi
+if ! bash -n "$install"; then
+  printf 'release-assets: install.sh has a syntax error\n' >&2
+  exit 1
+fi
 
 reported=$(bash "$raw" --version 2>/dev/null) || reported=''
 if [[ $reported != "sst $version" ]]; then
@@ -40,6 +49,7 @@ cp "$arch" "$dist/opensst.pkg.tar.zst"
   cd "$dist"
   LC_ALL=C sha256sum \
     sst \
+    install.sh \
     opensst.deb \
     opensst.rpm \
     opensst.pkg.tar.zst \

@@ -1,0 +1,11 @@
+#!/bin/bash
+# Fake apt-get for install.sh tests.
+set -u
+
+if [[ -n ${FAKE_APT_LOG-} ]]; then
+  printf '%s\n' "$*" >>"$FAKE_APT_LOG"
+fi
+if [[ ${FAKE_PKG_FAIL-} == 1 ]]; then
+  exit 1
+fi
+exit 0

@@ -121,7 +121,7 @@ test_help() {
 test_version() {
   run_capture "$SST" --version
   assert_eq "$STATUS" 0 "sst --version exits 0"
-  assert_eq "$OUTPUT" "sst 0.1.0" "sst --version prints the embedded version"
+  assert_eq "$OUTPUT" "sst 0.2.0" "sst --version prints the embedded version"
 
   run_capture "$SST" --help
   assert_contains "$OUTPUT" "sst --version" "help documents --version"
@@ -246,7 +246,7 @@ test_update_version_readers() {
   assert_eq "$OUTPUT" 0.1.1-1 "pacman asset version"
 
   run_sourced _sst_installed_version source "$exe"
-  assert_eq "$OUTPUT" 0.1.0 "source installed version"
+  assert_eq "$OUTPUT" 0.2.0 "source installed version"
 
   printf "SST_VERSION='0.1.1'\n" >"$file"
   run_sourced _sst_asset_version source "$file"
@@ -333,7 +333,7 @@ test_update_download() {
 run_update() {
   local self="$TMP/update-self/sst"
   mkdir -p "$(dirname "$self")"
-  cp "$SST" "$self"
+  sed "s/^SST_VERSION=.*/SST_VERSION='0.1.0'/" "$SST" >"$self"
   chmod +x "$self"
   : >"$TMP/stdout"
   : >"$TMP/stderr"
@@ -371,7 +371,7 @@ run_update_tty() {
   shift
   local self="$TMP/update-self/sst"
   mkdir -p "$(dirname "$self")"
-  cp "$SST" "$self"
+  sed "s/^SST_VERSION=.*/SST_VERSION='0.1.0'/" "$SST" >"$self"
   chmod +x "$self"
   : >"$TMP/stdout"
   : >"$TMP/stderr"
@@ -387,6 +387,251 @@ run_update_tty() {
   STATUS=$?
   OUTPUT=$(<"$TMP/stdout")
   ERROR=$(<"$TMP/stderr")
+}
+
+INSTALL="$ROOT/install.sh"
+
+make_installer_path() {
+  local dir=$1 manager=${2-} tool
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  for tool in bash mktemp rm cp mv mkdir dirname basename cat grep sed tr sha256sum install; do
+    ln -s "$(command -v "$tool")" "$dir/$tool"
+  done
+  ln -s "$FAKEBIN/curl" "$dir/curl"
+  ln -s "$FAKEBIN/wget" "$dir/wget"
+  ln -s "$FAKEBIN/sudo" "$dir/sudo"
+  if [[ -n $manager ]]; then
+    ln -s "$FAKEBIN/$manager" "$dir/$manager"
+  fi
+  cat >"$dir/sst" <<'EOF'
+#!/bin/bash
+printf 'sst %s\n' "${FAKE_INSTALLED_VERSION:-0.2.0}"
+EOF
+  chmod +x "$dir/sst"
+}
+
+installer_release() {
+  local dir=$1 version=$2
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  printf 'deb\n' >"$dir/opensst.deb"
+  printf 'rpm\n' >"$dir/opensst.rpm"
+  printf 'arch\n' >"$dir/opensst.pkg.tar.zst"
+  printf 'deb\n' >"$dir/opensst_${version}_all.deb"
+  printf 'rpm\n' >"$dir/opensst-${version}-1.noarch.rpm"
+  printf 'arch\n' >"$dir/opensst-${version}-1-any.pkg.tar.zst"
+  cat >"$dir/sst" <<EOF
+#!/bin/bash
+printf 'sst %s\\n' "$version"
+EOF
+  chmod +x "$dir/sst"
+  (
+    cd "$dir" &&
+      sha256sum \
+        sst \
+        opensst.deb \
+        opensst.rpm \
+        opensst.pkg.tar.zst \
+        "opensst_${version}_all.deb" \
+        "opensst-${version}-1.noarch.rpm" \
+        "opensst-${version}-1-any.pkg.tar.zst" >SHA256SUMS
+  )
+}
+
+reset_install_logs() {
+  : >"$TMP/install-curl.log"
+  : >"$TMP/install-wget.log"
+  : >"$TMP/install-sudo.log"
+}
+
+run_installer() {
+  local pathdir=$1
+  shift
+  : >"$TMP/stdout"
+  : >"$TMP/stderr"
+  reset_install_logs
+  env PATH="$pathdir" \
+    FAKE_CURL_DIR="${FAKE_CURL_DIR-}" \
+    FAKE_CURL_FAIL_ASSET="${FAKE_CURL_FAIL_ASSET-}" \
+    FAKE_CURL_LOG="$TMP/install-curl.log" \
+    FAKE_WGET_DIR="${FAKE_WGET_DIR-}" \
+    FAKE_WGET_FAIL_ASSET="${FAKE_WGET_FAIL_ASSET-}" \
+    FAKE_WGET_LOG="$TMP/install-wget.log" \
+    FAKE_PKG_FAIL="${FAKE_PKG_FAIL-}" \
+    FAKE_SUDO_LOG="$TMP/install-sudo.log" \
+    FAKE_SUDO_FAIL="${FAKE_SUDO_FAIL-}" \
+    FAKE_INSTALLED_VERSION="${FAKE_INSTALLED_VERSION-0.2.0}" \
+    /bin/bash "$INSTALL" "$@" >"$TMP/stdout" 2>"$TMP/stderr"
+  STATUS=$?
+  OUTPUT=$(<"$TMP/stdout")
+  ERROR=$(<"$TMP/stderr")
+}
+
+test_install_script() {
+  local base="$TMP/installer"
+  local rel_latest="$base/release-latest" rel_pinned="$base/release-v0.2.0"
+  local rel_bad="$base/release-bad" rel_invalid="$base/release-invalid"
+  local p_pacman="$base/path-pacman" p_apt="$base/path-apt"
+  local p_dpkg="$base/path-dpkg" p_dnf="$base/path-dnf" p_yum="$base/path-yum"
+  local p_rpm="$base/path-rpm" p_none="$base/path-none" p_priority="$base/path-priority"
+  local prefix="$base/prefix" empty="$base/empty-path"
+
+  rm -rf "$base"
+  mkdir -p "$base" "$empty"
+  installer_release "$rel_latest" 0.2.0
+  installer_release "$rel_pinned" 0.2.0
+  installer_release "$rel_bad" 0.2.0
+  printf 'corrupt\n' >"$rel_bad/opensst.deb"
+  installer_release "$rel_invalid" 0.2.0
+  cat >"$rel_invalid/sst" <<'EOF'
+#!/bin/bash
+printf 'not-a-version\n'
+EOF
+  chmod +x "$rel_invalid/sst"
+
+  assert_executable "$INSTALL" "install.sh is executable"
+
+  run_installer "$empty" --help
+  assert_eq "$STATUS" 0 "install.sh --help exits 0"
+  assert_contains "$OUTPUT" "--version" "installer help documents --version"
+  assert_contains "$OUTPUT" "--prefix" "installer help documents --prefix"
+
+  run_installer "$empty" --bogus
+  assert_eq "$STATUS" 2 "installer rejects an unknown option"
+  assert_contains "$ERROR" "usage" "installer usage error is written to stderr"
+
+  run_installer "$empty" --version 0.2
+  assert_eq "$STATUS" 2 "installer rejects a non-semver version"
+
+  make_installer_path "$p_pacman" pacman
+  make_installer_path "$p_apt" apt-get
+  make_installer_path "$p_dpkg" dpkg
+  make_installer_path "$p_dnf" dnf
+  make_installer_path "$p_yum" yum
+  make_installer_path "$p_rpm" rpm
+  make_installer_path "$p_none"
+  make_installer_path "$p_priority" pacman
+  ln -s "$FAKEBIN/apt-get" "$p_priority/apt-get"
+
+  FAKE_CURL_DIR="$rel_latest" run_installer "$p_pacman"
+  assert_eq "$STATUS" 0 "Arch install succeeds"
+  assert_file_contains "$TMP/install-curl.log" \
+    "releases/latest/download/opensst.pkg.tar.zst" "Arch uses the stable alias"
+  assert_file_contains "$TMP/install-sudo.log" "pacman -U --noconfirm" \
+    "Arch installs with pacman -U"
+  assert_contains "$OUTPUT" "0.2.0" "Arch install reports the installed version"
+
+  FAKE_CURL_DIR="$rel_pinned" run_installer "$p_pacman" --version 0.2.0
+  assert_eq "$STATUS" 0 "pinned Arch install succeeds"
+  assert_file_contains "$TMP/install-curl.log" \
+    "releases/download/v0.2.0/opensst-0.2.0-1-any.pkg.tar.zst" \
+    "pinned Arch uses the versioned asset"
+
+  FAKE_CURL_DIR="$rel_pinned" run_installer "$p_pacman" --version=0.2.0
+  assert_eq "$STATUS" 0 "installer accepts --version=VERSION"
+
+  FAKE_CURL_DIR="$rel_latest" run_installer "$p_apt"
+  assert_eq "$STATUS" 0 "DEB install succeeds"
+  assert_file_contains "$TMP/install-curl.log" \
+    "releases/latest/download/opensst.deb" "DEB uses the stable alias"
+  assert_file_contains "$TMP/install-sudo.log" "apt-get install -y" \
+    "DEB installs with apt-get"
+
+  FAKE_CURL_DIR="$rel_latest" run_installer "$p_dpkg"
+  assert_eq "$STATUS" 0 "DEB install succeeds without apt-get"
+  assert_file_contains "$TMP/install-sudo.log" "dpkg -i" \
+    "DEB falls back to dpkg -i"
+
+  FAKE_CURL_DIR="$rel_latest" run_installer "$p_dnf"
+  assert_eq "$STATUS" 0 "RPM install with dnf succeeds"
+  assert_file_contains "$TMP/install-sudo.log" "dnf install -y" \
+    "RPM uses dnf when available"
+
+  FAKE_CURL_DIR="$rel_latest" run_installer "$p_yum"
+  assert_eq "$STATUS" 0 "RPM install with yum succeeds"
+  assert_file_contains "$TMP/install-sudo.log" "yum localinstall -y" \
+    "RPM uses yum localinstall when available"
+
+  FAKE_CURL_DIR="$rel_latest" run_installer "$p_rpm"
+  assert_eq "$STATUS" 0 "RPM install with rpm succeeds"
+  assert_file_contains "$TMP/install-sudo.log" "rpm -Uvh" \
+    "RPM falls back to rpm -Uvh"
+
+  FAKE_CURL_DIR="$rel_latest" run_installer "$p_priority"
+  assert_eq "$STATUS" 0 "detection prefers pacman over apt-get"
+  assert_file_contains "$TMP/install-sudo.log" "pacman -U" \
+    "pacman is selected when both tools exist"
+
+  rm -rf "$prefix"
+  FAKE_CURL_DIR="$rel_latest" FAKE_INSTALLED_VERSION=0.2.0 \
+    run_installer "$p_none" --prefix "$prefix"
+  assert_eq "$STATUS" 0 "source fallback succeeds"
+  assert_executable "$prefix/bin/sst" "source fallback installs an executable"
+  run_capture "$prefix/bin/sst" --version
+  assert_eq "$OUTPUT" "sst 0.2.0" "source fallback installs the requested version"
+  assert_eq "$(wc -l <"$TMP/install-sudo.log")" 0 \
+    "a writable prefix does not use sudo"
+
+  mkdir -p "$prefix/bin"
+  printf '#!/bin/bash\nprintf "sst 0.1.0\\n"\n' >"$prefix/bin/sst"
+  chmod +x "$prefix/bin/sst"
+  FAKE_CURL_DIR="$rel_pinned" run_installer "$p_none" --version 0.1.0 --prefix "$prefix"
+  assert_eq "$STATUS" 1 "pinned source version mismatch fails"
+  assert_eq "$("$prefix/bin/sst" --version)" "sst 0.1.0" \
+    "a failed source install restores the previous file"
+
+  FAKE_CURL_DIR="$rel_bad" run_installer "$p_apt"
+  assert_eq "$STATUS" 1 "checksum mismatch fails"
+  assert_contains "$ERROR" "checksum" "checksum mismatch is explained"
+  assert_eq "$(wc -l <"$TMP/install-sudo.log")" 0 \
+    "checksum failure installs nothing"
+
+  FAKE_CURL_DIR="$rel_invalid" run_installer "$p_none" --prefix "$base/invalid-prefix"
+  assert_eq "$STATUS" 1 "invalid post-install version fails"
+  assert_absent "$base/invalid-prefix/bin/sst" \
+    "failed post-install check removes the new file"
+
+  make_installer_path "$p_none" pacman
+  rm -f "$p_none/curl" "$p_none/wget"
+  run_installer "$p_none"
+  assert_eq "$STATUS" 127 "missing downloader exits 127"
+  assert_contains "$ERROR" "curl or wget" "missing downloader is explained"
+
+  make_installer_path "$p_none" pacman
+  rm -f "$p_none/sha256sum"
+  run_installer "$p_none"
+  assert_eq "$STATUS" 127 "missing sha256sum exits 127"
+
+  make_installer_path "$p_none"
+  rm -f "$p_none/curl"
+  FAKE_WGET_DIR="$rel_latest" run_installer "$p_none" --prefix "$base/wget-prefix"
+  assert_eq "$STATUS" 0 "wget fallback works when curl is absent"
+  assert_file_contains "$TMP/install-wget.log" \
+    "releases/latest/download/sst" "wget fallback uses the same URL"
+
+  if (( EUID != 0 )); then
+    make_installer_path "$p_none" pacman
+    rm -f "$p_none/sudo"
+    FAKE_CURL_DIR="$rel_latest" run_installer "$p_none"
+    assert_eq "$STATUS" 127 "missing sudo exits 127 for a system package install"
+
+    make_installer_path "$p_none"
+    rm -f "$p_none/sudo"
+    mkdir -p "$base/readonly"
+    chmod 555 "$base/readonly"
+    run_installer "$p_none" --prefix "$base/readonly"
+    assert_eq "$STATUS" 127 "missing sudo exits 127 for a non-writable prefix"
+    chmod 755 "$base/readonly"
+  fi
+
+  make_installer_path "$p_none" pacman
+  FAKE_CURL_DIR="$rel_latest" FAKE_PKG_FAIL=1 run_installer "$p_none"
+  assert_eq "$STATUS" 1 "package install failure exits 1"
+  assert_contains "$ERROR" "pacman" "package install failure names the manager"
+
+  FAKE_CURL_DIR="$rel_latest" run_installer "$p_none" --prefix "$base/unused"
+  assert_eq "$STATUS" 2 "--prefix with a package manager is rejected"
 }
 
 test_update_check() {
@@ -448,8 +693,10 @@ test_update_source() {
   (cd "$dir" && sha256sum sst >SHA256SUMS)
   FAKE_CURL_DIR="$dir" run_update update --yes
   assert_eq "$STATUS" 1 "broken replacement fails sanity check"
-  assert_eq "$(sha256sum "$target" | cut -d' ' -f1)" \
-    "$(sha256sum "$SST" | cut -d' ' -f1)" "old source file is restored"
+  assert_contains "$(cat "$target")" "SST_VERSION='0.1.0'" \
+    "old source file is restored"
+  assert_contains "$(cat "$target")" "_sst_main" \
+    "restored file is the full CLI, not the broken asset"
 
   local sudo_target="$TMP/sudo-source/sst" sudo_asset="$TMP/sudo-asset"
   mkdir -p "$(dirname "$sudo_target")"
@@ -971,14 +1218,14 @@ test_arch_package() {
   fi
   local out="$TMP/arch"
   mkdir -p "$out"
-  "$ROOT/packaging/build-arch.sh" 0.1.0 "$out" >"$TMP/stdout" 2>"$TMP/stderr"
+  "$ROOT/packaging/build-arch.sh" 0.2.0 "$out" >"$TMP/stdout" 2>"$TMP/stderr"
   STATUS=$?
   assert_eq "$STATUS" 0 "arch package build succeeds"
-  local pkg="$out/opensst-0.1.0-1-any.pkg.tar.zst"
+  local pkg="$out/opensst-0.2.0-1-any.pkg.tar.zst"
   assert_file "$pkg" "arch package has the expected filename"
   assert_contains "$(bsdtar -xOf "$pkg" .PKGINFO)" "pkgname = opensst" \
     "arch PKGINFO names opensst"
-  assert_contains "$(bsdtar -xOf "$pkg" .PKGINFO)" "pkgver = 0.1.0-1" \
+  assert_contains "$(bsdtar -xOf "$pkg" .PKGINFO)" "pkgver = 0.2.0-1" \
     "arch PKGINFO records version"
   assert_contains "$(bsdtar -tf "$pkg")" "usr/bin/sst" \
     "arch package installs /usr/bin/sst"
@@ -989,34 +1236,46 @@ test_release_assets() {
   mkdir -p "$dist"
   cp "$SST" "$dist/sst"
   chmod +x "$dist/sst"
-  printf 'deb\n' >"$dist/opensst_0.1.0_all.deb"
-  printf 'rpm\n' >"$dist/opensst-0.1.0-1.noarch.rpm"
-  printf 'arch\n' >"$dist/opensst-0.1.0-1-any.pkg.tar.zst"
+  cp "$INSTALL" "$dist/install.sh"
+  chmod +x "$dist/install.sh"
+  printf 'deb\n' >"$dist/opensst_0.2.0_all.deb"
+  printf 'rpm\n' >"$dist/opensst-0.2.0-1.noarch.rpm"
+  printf 'arch\n' >"$dist/opensst-0.2.0-1-any.pkg.tar.zst"
 
-  "$ROOT/packaging/release-assets.sh" 0.1.0 "$dist" >"$TMP/stdout" 2>"$TMP/stderr"
+  "$ROOT/packaging/release-assets.sh" 0.2.0 "$dist" >"$TMP/stdout" 2>"$TMP/stderr"
   STATUS=$?
   assert_eq "$STATUS" 0 "release assets script succeeds"
   local file
   for file in opensst.deb opensst.rpm opensst.pkg.tar.zst SHA256SUMS; do
     assert_file "$dist/$file" "release assets creates $file"
   done
+  assert_file "$dist/install.sh" "release assets keeps install.sh"
   assert_file_contains "$dist/SHA256SUMS" "opensst.deb" \
     "checksums include stable DEB alias"
   assert_file_contains "$dist/SHA256SUMS" "opensst.pkg.tar.zst" \
     "checksums include stable Arch alias"
   assert_file_contains "$dist/SHA256SUMS" "  sst" \
     "checksums include the raw source asset"
-  assert_file_contains "$dist/SHA256SUMS" "opensst_0.1.0_all.deb" \
+  assert_file_contains "$dist/SHA256SUMS" "  install.sh" \
+    "checksums include install.sh"
+  assert_file_contains "$dist/SHA256SUMS" "opensst_0.2.0_all.deb" \
     "checksums include the versioned DEB"
+
+  rm -f "$dist/install.sh"
+  "$ROOT/packaging/release-assets.sh" 0.2.0 "$dist" >"$TMP/stdout" 2>"$TMP/stderr"
+  STATUS=$?
+  assert_eq "$STATUS" 1 "release assets refuses a missing install.sh"
+  cp "$INSTALL" "$dist/install.sh"
+  chmod +x "$dist/install.sh"
 
   printf "#!/bin/bash\nSST_VERSION='9.9.9'\n" >"$dist/sst"
   chmod +x "$dist/sst"
-  "$ROOT/packaging/release-assets.sh" 0.1.0 "$dist" >"$TMP/stdout" 2>"$TMP/stderr"
+  "$ROOT/packaging/release-assets.sh" 0.2.0 "$dist" >"$TMP/stdout" 2>"$TMP/stderr"
   STATUS=$?
   assert_eq "$STATUS" 1 "release assets refuses a raw script with the wrong version"
 
   rm -f "$dist/opensst.rpm"
-  "$ROOT/packaging/release-assets.sh" 0.1.0 "$dist" >"$TMP/stdout" 2>"$TMP/stderr"
+  "$ROOT/packaging/release-assets.sh" 0.2.0 "$dist" >"$TMP/stdout" 2>"$TMP/stderr"
   STATUS=$?
   assert_eq "$STATUS" 1 "release assets refuses a missing versioned package"
 }
@@ -1026,13 +1285,13 @@ test_packages() {
     local debdir="$TMP/deb"
     rm -rf "$debdir"
     mkdir -p "$debdir"
-    "$ROOT/packaging/build-deb.sh" 0.1.0 "$debdir" >"$TMP/stdout" 2>"$TMP/stderr"
+    "$ROOT/packaging/build-deb.sh" 0.2.0 "$debdir" >"$TMP/stdout" 2>"$TMP/stderr"
     STATUS=$?
     assert_eq "$STATUS" 0 "deb build succeeds"
-    local deb="$debdir/opensst_0.1.0_all.deb"
+    local deb="$debdir/opensst_0.2.0_all.deb"
     assert_file "$deb" "deb build creates the expected filename"
     assert_eq "$(dpkg-deb -f "$deb" Package)" opensst "deb package is named opensst"
-    assert_eq "$(dpkg-deb -f "$deb" Version)" 0.1.0 "deb version matches"
+    assert_eq "$(dpkg-deb -f "$deb" Version)" 0.2.0 "deb version matches"
     assert_eq "$(dpkg-deb -f "$deb" Architecture)" all "deb is architecture-independent"
     assert_contains "$(dpkg-deb -f "$deb" Depends)" "openssh-client" "deb depends on the OpenSSH client"
     if dpkg-deb -c "$deb" | grep -Fq './usr/bin/sst'; then
@@ -1048,10 +1307,10 @@ test_packages() {
     local rpmdir="$TMP/rpm"
     rm -rf "$rpmdir"
     mkdir -p "$rpmdir"
-    "$ROOT/packaging/build-rpm.sh" 0.1.0 "$rpmdir" >"$TMP/stdout" 2>"$TMP/stderr"
+    "$ROOT/packaging/build-rpm.sh" 0.2.0 "$rpmdir" >"$TMP/stdout" 2>"$TMP/stderr"
     STATUS=$?
     assert_eq "$STATUS" 0 "rpm build succeeds"
-    local rpm_file="$rpmdir/opensst-0.1.0-1.noarch.rpm"
+    local rpm_file="$rpmdir/opensst-0.2.0-1.noarch.rpm"
     assert_file "$rpm_file" "rpm build creates the expected filename"
     assert_eq "$(rpm -qp --qf '%{NAME}' "$rpm_file")" opensst "rpm package is named opensst"
     assert_eq "$(rpm -qp --qf '%{ARCH}' "$rpm_file")" noarch "rpm is architecture-independent"
@@ -1089,6 +1348,9 @@ test_release_workflow() {
   assert_file_contains "$release" "archlinux:latest" "Arch build uses an Arch container"
   assert_file_contains "$release" "release-assets.sh" "release creates stable asset aliases"
   assert_file_contains "$release" "opensst.pkg.tar.zst" "release publishes the stable Arch alias"
+  assert_file_contains "$release" "cp install.sh dist/install.sh" \
+    "release stages install.sh"
+  assert_file_contains "$release" "dist/install.sh" "release publishes install.sh"
 }
 
 test_ci_workflow() {
@@ -1097,6 +1359,8 @@ test_ci_workflow() {
   assert_file_contains "$ci" "package-arch" "CI builds an Arch package"
   assert_file_contains "$ci" "archlinux:latest" "CI uses an Arch container"
   assert_file_contains "$ci" "pacman -U" "CI smoke-tests the Arch package"
+  assert_file_contains "$ROOT/Makefile" "bash -n install.sh" \
+    "make check syntax-checks install.sh"
 }
 
 test_help
@@ -1109,6 +1373,7 @@ test_update_check
 test_update_source
 test_update_interaction
 test_update_packages
+test_install_script
 test_usage_errors
 test_project_names
 test_ssh_validation_accepts
@@ -1137,8 +1402,8 @@ test_documentation() {
     'sst kill [ssh options] <host> <project>' \
     '/usr/local/bin' \
     '/usr/bin/sst' \
-    'opensst_0.1.0_all.deb' \
-    'opensst-0.1.0-1.noarch.rpm' \
+    'releases/latest/download/install.sh' \
+    'bash -s -- --version 0.2.0' \
     '30 seconds' \
     '2 seconds' \
     'Serverless SST' \
@@ -1153,8 +1418,9 @@ test_documentation() {
     assert_file_contains "$readme" "$needle" "README documents '$needle'"
   done
 
-  for needle in 'Release' 'Version History' 'explicit' 'workflow_dispatch' 'make check' \
-    '0.1.0' 'sst update' 'SST_VERSION' 'pacman' 'stable aliases'; do
+  for needle in 'Release' 'Version History' 'explicit' 'workflow_dispatch' \
+    'make check' '0.2.0' 'install.sh' 'sst update' 'SST_VERSION' 'pacman' \
+    'stable aliases'; do
     assert_file_contains "$agents" "$needle" "AGENTS documents '$needle'"
   done
 

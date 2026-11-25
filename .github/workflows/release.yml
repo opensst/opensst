@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Stable semantic version without a leading v (for example 0.1.0)
+        description: Stable semantic version without a leading v (for example 0.2.0)
         required: true
         type: string
 
@@ -173,6 +173,7 @@ jobs:
       - name: Prepare stable release assets
         run: |
           cp bin/sst dist/sst
+          cp install.sh dist/install.sh
           packaging/release-assets.sh "$VERSION" dist
       - name: Configure Git identity
         run: |
@@ -206,6 +207,7 @@ jobs:
               --generate-notes \
               --title "$tag" \
               dist/sst \
+              dist/install.sh \
               dist/opensst.deb \
               dist/opensst.rpm \
               dist/opensst.pkg.tar.zst \
