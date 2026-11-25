@@ -270,6 +270,122 @@ test_missing_local_ssh() {
   assert_contains "$ERROR" "ssh" "missing local ssh is reported"
 }
 
+run_sst_tty() {
+  local exit_code=$1 exec_remote=$2
+  shift 2
+  : >"$TMP/stdout"
+  : >"$TMP/stderr"
+  : >"$CLOG"
+  : >"$GLOG"
+  local cmd
+  cmd=$(printf 'PATH=%q FAKE_SSH_LOG=%q FAKE_SSH_G_LOG=%q FAKE_SSH_EXIT=%q FAKE_SSH_EXEC_REMOTE=%q %q' \
+    "$FAKEBIN:$PATH" "$CLOG" "$GLOG" "$exit_code" "$exec_remote" "$SST")
+  local arg
+  for arg in "$@"; do
+    cmd+=$(printf ' %q' "$arg")
+  done
+  script -qec "$cmd" /dev/null >"$TMP/stdout" 2>"$TMP/stderr"
+  STATUS=$?
+  OUTPUT=$(<"$TMP/stdout")
+  ERROR=$(<"$TMP/stderr")
+}
+
+test_open_requires_tty() {
+  run_sst open devbox Work
+  assert_eq "$STATUS" 2 "open without a terminal exits 2"
+  assert_eq "$(connection_count)" 0 "open without a terminal connects to nothing"
+}
+
+test_open_operation() {
+  if ! command -v script >/dev/null 2>&1; then
+    printf '# skip open PTY tests: script(1) is unavailable\n'
+    return
+  fi
+
+  run_sst_tty 0 0 open -p 2222 devbox Work
+  assert_eq "$STATUS" 0 "open succeeds"
+  assert_file_contains "$CLOG" "-t -p 2222 devbox" "open uses ssh -t before host"
+  assert_file_contains "$CLOG" "new-session -A -D -s Work" "open creates or attaches the named session"
+  assert_eq "$(connection_count)" 1 "open makes exactly one connection"
+  assert_contains "$OUTPUT" "?1049l" "open disarms terminal modes on exit"
+
+  run_sst_tty 0 0 open devbox 'Work;id'
+  assert_eq "$STATUS" 2 "open rejects an unsafe project name"
+  assert_eq "$(connection_count)" 0 "rejected open connects to nothing"
+
+  run_sst_tty 0 1 open devbox Work
+  assert_eq "$STATUS" 127 "open returns 127 when remote tmux is missing"
+  assert_contains "$OUTPUT" "install tmux" "open explains how to fix missing tmux"
+
+  run_sst_tty 255 0 open devbox Work
+  assert_eq "$STATUS" 255 "a fast initial failure returns 255 without retrying"
+  assert_eq "$(connection_count)" 1 "a fast initial failure makes one attempt"
+}
+
+test_open_reconnects() {
+  local calls="$TMP/reconnect-calls" disarms="$TMP/disarms"
+  : >"$calls"
+  : >"$disarms"
+  (
+    # shellcheck disable=SC1090
+    source "$SST"
+    _sst_ssh() {
+      local n
+      n=$(wc -l <"$calls")
+      printf '%s\n' "$*" >>"$calls"
+      if (( n == 0 )); then
+        SECONDS=$((SECONDS + 31))
+        return 255
+      fi
+      return 0
+    }
+    _sst_disarm() { printf 'disarm\n' >>"$disarms"; }
+    sleep() { :; }
+    _sst_open_session -p 2222 devbox Work
+  ) >"$TMP/stdout" 2>"$TMP/stderr"
+  STATUS=$?
+  ERROR=$(<"$TMP/stderr")
+
+  assert_eq "$STATUS" 0 "a qualifying failure reconnects and returns success"
+  assert_eq "$(connection_count_calls "$calls")" 2 "reconnect retries once"
+  assert_eq "$(wc -l <"$disarms" | tr -d ' ')" 2 "terminal is disarmed after each attempt"
+  assert_contains "$ERROR" "reconnect" "reconnect is announced on stderr"
+  assert_ne "$(sed -n 1p "$calls")" "" "reconnect attempts are recorded"
+  assert_eq "$(sed -n 1p "$calls")" "$(sed -n 2p "$calls")" \
+    "reconnect reuses identical SSH arguments and project"
+
+  : >"$calls"
+  : >"$disarms"
+  (
+    # shellcheck disable=SC1090
+    source "$SST"
+    _sst_ssh() {
+      local n
+      n=$(wc -l <"$calls")
+      printf '%s\n' "$*" >>"$calls"
+      if (( n == 0 )); then
+        SECONDS=$((SECONDS + 31))
+        return 255
+      fi
+      return 1
+    }
+    _sst_disarm() { printf 'disarm\n' >>"$disarms"; }
+    sleep() { :; }
+    _sst_open_session devbox Work
+  ) >"$TMP/stdout" 2>"$TMP/stderr"
+  STATUS=$?
+  assert_eq "$STATUS" 1 "a non-255 retry result ends reconnection"
+  assert_eq "$(connection_count_calls "$calls")" 2 "non-255 ends reconnection after one retry"
+}
+
+connection_count_calls() {
+  if [[ -f $1 ]]; then
+    wc -l <"$1" | tr -d ' '
+  else
+    printf '0'
+  fi
+}
+
 test_help
 test_usage_errors
 test_project_names
@@ -279,6 +395,9 @@ test_list_and_kill
 test_management_never_retries
 test_missing_remote_tmux
 test_missing_local_ssh
+test_open_requires_tty
+test_open_operation
+test_open_reconnects
 
 printf '\n%d tests, %d failures\n' "$tests" "$failures"
 (( failures == 0 ))

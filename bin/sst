@@ -152,14 +152,67 @@ _sst_cmd_kill() {
   _sst_ssh -T "${argv[@]}" "$(_sst_remote_command kill "$project")"
 }
 
+_sst_disarm() {
+  printf '\033[?1000l\033[?1002l\033[?1003l\033[?1006l\033[?1004l\033[?1049l\033[?25h'
+}
+
+_sst_open_session() {
+  local -a argv=("${@:1:$#-1}")
+  local project=${!#} remote started rc
+  remote=$(_sst_remote_command open "$project")
+
+  started=$SECONDS
+  _sst_ssh -t "${argv[@]}" "$remote"
+  rc=$?
+  _sst_disarm
+
+  if (( rc != 255 || SECONDS - started < 30 )); then
+    return "$rc"
+  fi
+
+  _sst_error 'connection lost; reconnecting every 2 seconds'
+  (
+    while :; do
+      sleep 2
+      _sst_ssh -t "${argv[@]}" "$remote"
+      rc=$?
+      _sst_disarm
+      (( rc == 255 )) || exit "$rc"
+    done
+  )
+}
+
+_sst_cmd_open() {
+  if (( $# < 2 )); then
+    _sst_error 'open requires a host and a project'
+    return 2
+  fi
+  if [[ ! -t 0 || ! -t 1 ]]; then
+    _sst_error 'open requires an interactive terminal'
+    return 2
+  fi
+  _sst_require_ssh || return 127
+  local project=${!#}
+  if ! _sst_valid_project "$project"; then
+    _sst_error 'invalid project name; use letters, digits, _ and -, starting with a letter or digit'
+    return 2
+  fi
+  local -a argv=("${@:1:$#-1}")
+  if ! _sst_validate_ssh "${argv[@]}"; then
+    _sst_error 'invalid SSH arguments; supply options and exactly one host'
+    return 2
+  fi
+  _sst_open_session "${argv[@]}" "$project"
+}
+
 _sst_main() {
   local cmd=${1-}
   shift || true
   case $cmd in
     -h|--help) _sst_usage ;;
+    open) _sst_cmd_open "$@" ;;
     list) _sst_cmd_list "$@" ;;
     kill) _sst_cmd_kill "$@" ;;
-    open) _sst_usage >&2; return 2 ;;
     '') _sst_usage >&2; return 2 ;;
     *) _sst_usage >&2; return 2 ;;
   esac
