@@ -59,6 +59,30 @@ assert_file_contains() {
   fi
 }
 
+assert_file() {
+  if [[ -f $1 ]]; then
+    pass "$2"
+  else
+    fail "$2 (missing $1)"
+  fi
+}
+
+assert_executable() {
+  if [[ -x $1 ]]; then
+    pass "$2"
+  else
+    fail "$2 (not executable: $1)"
+  fi
+}
+
+assert_absent() {
+  if [[ ! -e $1 ]]; then
+    pass "$2"
+  else
+    fail "$2 (still present: $1)"
+  fi
+}
+
 run_capture() {
   : >"$TMP/stdout"
   : >"$TMP/stderr"
@@ -378,6 +402,96 @@ test_open_reconnects() {
   assert_eq "$(connection_count_calls "$calls")" 2 "non-255 ends reconnection after one retry"
 }
 
+test_source_install() {
+  local user="$TMP/user" root="$TMP/root" nosudo="$TMP/nosudo"
+  rm -rf "$user" "$root" "$nosudo"
+  mkdir -p "$nosudo"
+  printf '#!/bin/sh\nexit 99\n' >"$nosudo/sudo"
+  chmod +x "$nosudo/sudo"
+
+  PATH="$nosudo:$PATH" make -s -C "$ROOT" install PREFIX="$user" \
+    >"$TMP/stdout" 2>"$TMP/stderr"
+  STATUS=$?
+  assert_eq "$STATUS" 0 "make install into a user prefix succeeds without sudo"
+  assert_executable "$user/bin/sst" "make install installs an executable"
+
+  run_capture "$user/bin/sst" --help
+  assert_eq "$STATUS" 0 "the installed command runs"
+  assert_contains "$OUTPUT" "sst open" "the installed command prints usage"
+
+  make -s -C "$ROOT" install PREFIX=/usr/local DESTDIR="$root" \
+    >"$TMP/stdout" 2>"$TMP/stderr"
+  STATUS=$?
+  assert_eq "$STATUS" 0 "make install honors DESTDIR"
+  assert_executable "$root/usr/local/bin/sst" "DESTDIR install uses /usr/local/bin"
+
+  make -s -C "$ROOT" uninstall PREFIX=/usr/local DESTDIR="$root" \
+    >"$TMP/stdout" 2>"$TMP/stderr"
+  STATUS=$?
+  assert_eq "$STATUS" 0 "make uninstall succeeds"
+  assert_absent "$root/usr/local/bin/sst" "make uninstall removes the executable"
+
+  make -s -C "$ROOT" uninstall PREFIX="$user" \
+    >"$TMP/stdout" 2>"$TMP/stderr"
+  STATUS=$?
+  assert_eq "$STATUS" 0 "make uninstall works with a user prefix"
+  assert_absent "$user/bin/sst" "user-prefix uninstall removes the executable"
+}
+
+test_package_version_validation() {
+  "$ROOT/packaging/build-deb.sh" 1.0 "$TMP" >"$TMP/stdout" 2>"$TMP/stderr"
+  STATUS=$?
+  assert_eq "$STATUS" 2 "deb build rejects a non-semver version"
+
+  "$ROOT/packaging/build-rpm.sh" v1.0.0 "$TMP" >"$TMP/stdout" 2>"$TMP/stderr"
+  STATUS=$?
+  assert_eq "$STATUS" 2 "rpm build rejects a version with a tag prefix"
+}
+
+test_packages() {
+  if command -v dpkg-deb >/dev/null 2>&1; then
+    local debdir="$TMP/deb"
+    rm -rf "$debdir"
+    mkdir -p "$debdir"
+    "$ROOT/packaging/build-deb.sh" 0.1.0 "$debdir" >"$TMP/stdout" 2>"$TMP/stderr"
+    STATUS=$?
+    assert_eq "$STATUS" 0 "deb build succeeds"
+    local deb="$debdir/opensst_0.1.0_all.deb"
+    assert_file "$deb" "deb build creates the expected filename"
+    assert_eq "$(dpkg-deb -f "$deb" Package)" opensst "deb package is named opensst"
+    assert_eq "$(dpkg-deb -f "$deb" Version)" 0.1.0 "deb version matches"
+    assert_eq "$(dpkg-deb -f "$deb" Architecture)" all "deb is architecture-independent"
+    assert_contains "$(dpkg-deb -f "$deb" Depends)" "openssh-client" "deb depends on the OpenSSH client"
+    if dpkg-deb -c "$deb" | grep -Fq './usr/bin/sst'; then
+      pass "deb installs /usr/bin/sst"
+    else
+      fail "deb installs /usr/bin/sst"
+    fi
+  else
+    printf '# skip deb package test: dpkg-deb is unavailable\n'
+  fi
+
+  if command -v rpmbuild >/dev/null 2>&1 && command -v rpm >/dev/null 2>&1; then
+    local rpmdir="$TMP/rpm"
+    rm -rf "$rpmdir"
+    mkdir -p "$rpmdir"
+    "$ROOT/packaging/build-rpm.sh" 0.1.0 "$rpmdir" >"$TMP/stdout" 2>"$TMP/stderr"
+    STATUS=$?
+    assert_eq "$STATUS" 0 "rpm build succeeds"
+    local rpm_file="$rpmdir/opensst-0.1.0-1.noarch.rpm"
+    assert_file "$rpm_file" "rpm build creates the expected filename"
+    assert_eq "$(rpm -qp --qf '%{NAME}' "$rpm_file")" opensst "rpm package is named opensst"
+    assert_eq "$(rpm -qp --qf '%{ARCH}' "$rpm_file")" noarch "rpm is architecture-independent"
+    if rpm -qlp "$rpm_file" | grep -Fq '/usr/bin/sst'; then
+      pass "rpm installs /usr/bin/sst"
+    else
+      fail "rpm installs /usr/bin/sst"
+    fi
+  else
+    printf '# skip rpm package test: rpmbuild is unavailable\n'
+  fi
+}
+
 connection_count_calls() {
   if [[ -f $1 ]]; then
     wc -l <"$1" | tr -d ' '
@@ -398,6 +512,9 @@ test_missing_local_ssh
 test_open_requires_tty
 test_open_operation
 test_open_reconnects
+test_source_install
+test_package_version_validation
+test_packages
 
 printf '\n%d tests, %d failures\n' "$tests" "$failures"
 (( failures == 0 ))
