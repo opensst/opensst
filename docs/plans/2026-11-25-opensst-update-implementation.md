@@ -1211,11 +1211,19 @@ Report:
 
 ## Implementation status (2026-11-25)
 
-Tasks 1-11 are implemented in the working tree and locally verified with
-`make check` (269 tests, 0 failures), Bash syntax checks, `git diff --check`,
-workflow YAML parsing, a local Arch package build, and a local
-`release-assets.sh` run over fixture packages.
+Tasks 1-11 are implemented, committed, and released.
 
-No commit, push, tag, GitHub Release, or package publication has been performed.
-Those steps remain pending explicit authorization. The release placement and
-version bump for the update feature are also pending a maintainer decision.
+- Local verification: `make check` (269 tests, 0 failures), Bash syntax checks,
+  `git diff --check`, workflow YAML parsing, a local Arch package build, and a
+  local `release-assets.sh` run over fixture packages.
+- Commit: `61bd936` (`feat: add explicit sst update and Arch packaging`).
+- CI run `45618869046` passed Test, DEB, RPM, and Arch jobs.
+- Annotated tag `v0.1.0` points to `61bd936`.
+- Release workflow run `45619039958` passed Validate, Test, DEB, RPM, Arch, and
+  Publish jobs.
+- GitHub Release `v0.1.0` publishes `sst`, `opensst.deb`, `opensst.rpm`,
+  `opensst.pkg.tar.zst`, `SHA256SUMS`, and the three versioned packages.
+  All assets pass `sha256sum -c`, and the stable aliases are byte-identical to
+  their versioned counterparts.
+- End-to-end check: the released `sst update --check` reports
+  `0.1.0 is up to date` and exits 0.

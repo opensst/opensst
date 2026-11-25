@@ -1,7 +1,7 @@
 # OpenSST Update Design
 
 Date: 2026-11-25
-Status: Approved 2026-11-25; implementation complete 2026-11-25 (uncommitted)
+Status: Approved 2026-11-25; implemented and released as v0.1.0 on 2026-11-25
 
 ## Relationship to the base design
 
