@@ -1,0 +1,154 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Stable semantic version without a leading v (for example 0.1.0)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Require main and a stable version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "Releases must be dispatched from main, not $GITHUB_REF" >&2
+            exit 1
+          fi
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Version must be MAJOR.MINOR.PATCH without a v prefix: $VERSION" >&2
+            exit 1
+          fi
+      - name: Reject a tag at a different commit
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          tag="v$VERSION"
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            tagged=$(git rev-list -n 1 "$tag")
+            if [ "$tagged" != "$GITHUB_SHA" ]; then
+              echo "Tag $tag points to $tagged, not $GITHUB_SHA" >&2
+              exit 1
+            fi
+          fi
+
+  test:
+    name: Test
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run checks
+        run: make check
+
+  package-deb:
+    name: DEB package
+    needs: test
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build DEB
+        run: packaging/build-deb.sh "$VERSION" dist
+      - name: Install and smoke test DEB
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y "./dist/opensst_${VERSION}_all.deb"
+          sst --help
+      - name: Upload DEB artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: opensst-deb
+          path: dist/*.deb
+          retention-days: 7
+
+  package-rpm:
+    name: RPM package
+    needs: test
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install RPM tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm
+      - name: Build RPM
+        run: packaging/build-rpm.sh "$VERSION" dist
+      - name: Install and smoke test RPM in Fedora
+        run: |
+          docker run --rm -v "$PWD/dist:/dist:ro" fedora:latest \
+            bash -c "dnf install -y /dist/opensst-${VERSION}-1.noarch.rpm && sst --help"
+      - name: Upload RPM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: opensst-rpm
+          path: dist/*.rpm
+          retention-days: 7
+
+  release:
+    name: Publish release
+    needs:
+      - package-deb
+      - package-rpm
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ inputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: opensst-*
+          merge-multiple: true
+          path: dist
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum "opensst_${VERSION}_all.deb" \
+            "opensst-${VERSION}-1.noarch.rpm" >SHA256SUMS
+      - name: Create annotated tag
+        run: |
+          tag="v$VERSION"
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            if [ "$(git rev-list -n 1 "$tag")" != "$GITHUB_SHA" ]; then
+              echo "Existing tag $tag does not point to $GITHUB_SHA" >&2
+              exit 1
+            fi
+          else
+            git tag -a "$tag" -m "OpenSST $tag"
+            git push origin "refs/tags/$tag"
+          fi
+      - name: Create GitHub Release
+        run: |
+          tag="v$VERSION"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $tag already exists; leaving it unchanged."
+          else
+            gh release create "$tag" \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --generate-notes \
+              --title "$tag" \
+              "dist/opensst_${VERSION}_all.deb" \
+              "dist/opensst-${VERSION}-1.noarch.rpm" \
+              dist/SHA256SUMS
+          fi
