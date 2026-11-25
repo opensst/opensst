@@ -66,7 +66,7 @@ overwritten directly.
 To install a specific stable version:
 
 ```sh
-curl -fsSL https://github.com/opensst/opensst/releases/latest/download/install.sh | bash -s -- --version 0.2.0
+curl -fsSL https://github.com/opensst/opensst/releases/latest/download/install.sh | bash -s -- --version 0.2.1
 ```
 
 Use only one installation method. Do not mix a package install under
@@ -156,6 +156,33 @@ failure does not prove the remote operation did not run.
 attached to the same session. Opening the same project from another terminal
 will therefore displace the earlier client. Use different project names for
 concurrent attachments.
+
+### Remote terminal compatibility
+
+`open` allocates a PTY, so SSH passes the local `TERM` to the remote host.
+tmux needs a terminfo entry for that value and otherwise fails with
+`missing or unsuitable terminal: ...` (common with Ghostty, kitty, or
+Alacritty). Before starting tmux, `open` probes the entry with the remote
+`infocmp`. If it is missing, `open` uses the first available entry from
+`xterm-256color`, `xterm`, `screen`, and `vt100`, and reports the change:
+
+```text
+sst: remote terminal xterm-ghostty is unsupported; using xterm-256color
+```
+
+A fallback is applied only after the replacement entry probes successfully.
+If the remote host has no `infocmp`, or none of the fallback entries exist,
+`TERM` is left unchanged and tmux reports its usual error. `list` and `kill`
+allocate no PTY and are unaffected. Inside tmux, `TERM` is still set by tmux
+itself.
+
+A fallback keeps the session usable but can reduce terminal capabilities. To
+keep all local terminal features, install the matching terminfo entry on the
+remote host instead, for example for Ghostty:
+
+```sh
+infocmp -x xterm-ghostty | ssh <host> -- tic -x -
+```
 
 ## Updating
 
@@ -247,9 +274,9 @@ named `opensst` even though the installed command is `sst`.
 
 ```sh
 make check                 # Bash syntax checks plus the full test suite
-make package-deb VERSION=0.2.0
-make package-rpm VERSION=0.2.0
-make package-arch VERSION=0.2.0
+make package-deb VERSION=0.2.1
+make package-rpm VERSION=0.2.1
+make package-arch VERSION=0.2.1
 ```
 
 Tests run the real executable with a fake `ssh` on `PATH`; they never contact

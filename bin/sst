@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -u
 
-SST_VERSION='0.2.0'
+SST_VERSION='0.2.1'
 _SST_RELEASE_BASE='https://github.com/opensst/opensst/releases/latest/download'
 _SST_UPDATE_TMP=''
 
@@ -792,7 +792,19 @@ _sst_remote_command() {
   case $operation in
     list) action='exec tmux list-sessions' ;;
     kill) action="exec tmux kill-session -t =$project" ;;
-    open) action="exec tmux new-session -A -D -s $project" ;;
+    open)
+      # A PTY passes the local TERM to the remote host. tmux refuses to start
+      # when that entry is missing there (for example xterm-ghostty), so fall
+      # back to a supported entry. Only a verified fallback changes TERM;
+      # without infocmp the original behavior is preserved. The remote command
+      # stays on one line so connection logs keep one line per invocation.
+      action='if [ -n "${TERM-}" ] && command -v infocmp >/dev/null 2>&1 && ! infocmp "$TERM" >/dev/null 2>&1; then'
+      action+=' for _sst_term in xterm-256color xterm screen vt100; do'
+      action+=' if infocmp "$_sst_term" >/dev/null 2>&1; then'
+      action+=' printf "%s\n" "sst: remote terminal $TERM is unsupported; using $_sst_term" >&2;'
+      action+=' TERM=$_sst_term; export TERM; break; fi; done; unset _sst_term; fi;'
+      action+=" exec tmux new-session -A -D -s $project"
+      ;;
     *) return 1 ;;
   esac
   printf '%s\n' \

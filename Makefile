@@ -1,7 +1,7 @@
 PREFIX ?= /usr/local
 BINDIR ?= $(PREFIX)/bin
 DESTDIR ?=
-VERSION ?= 0.2.0
+VERSION ?= 0.2.1
 
 .PHONY: test check install uninstall package-deb package-rpm package-arch
 

@@ -30,7 +30,7 @@ usage() {
     '' \
     'Examples:' \
     '  curl -fsSL https://github.com/opensst/opensst/releases/latest/download/install.sh | bash' \
-    '  curl -fsSL https://github.com/opensst/opensst/releases/latest/download/install.sh | bash -s -- --version 0.2.0'
+    '  curl -fsSL https://github.com/opensst/opensst/releases/latest/download/install.sh | bash -s -- --version 0.2.1'
 }
 
 error() {

@@ -28,9 +28,9 @@ Makefile                 Test, check, install, uninstall, package targets
 make check                              # syntax checks + tests
 make install PREFIX=/usr/local          # source install
 make uninstall PREFIX=/usr/local        # source uninstall
-make package-deb VERSION=0.2.0          # build dist/opensst_0.2.0_all.deb
-make package-rpm VERSION=0.2.0          # build dist/opensst-0.2.0-1.noarch.rpm
-make package-arch VERSION=0.2.0         # build dist/opensst-0.2.0-1-any.pkg.tar.zst
+make package-deb VERSION=0.2.1          # build dist/opensst_0.2.1_all.deb
+make package-rpm VERSION=0.2.1          # build dist/opensst-0.2.1-1.noarch.rpm
+make package-arch VERSION=0.2.1         # build dist/opensst-0.2.1-1-any.pkg.tar.zst
 bash tests/run.bash                     # tests only
 ```
 
@@ -56,6 +56,13 @@ host. The fake SSH fixture is the only SSH executable tests may reach.
 - Do not use `eval` for SSH argument handling.
 - Keep the runtime independent of Omarchy, Ghostty, Python, Mosh, autossh,
   systemd, and local tmux.
+- `open` passes the local TERM through its PTY. Before `exec tmux`, probe the
+  remote entry with `infocmp` and fall back to the first available of
+  `xterm-256color`, `xterm`, `screen`, `vt100`, announcing the change on
+  stderr. Never change TERM without a successful probe: no `infocmp` or no
+  usable candidate preserves the original behavior. `list`/`kill` never probe.
+- Keep the remote command on one line; connection logs and tests assume one
+  line per SSH invocation.
 - Keep tests independent of real hosts and of Omarchy shell functions.
 
 ## Update safety invariants
@@ -138,7 +145,7 @@ package artifacts for inspection.
 ## Release process
 
 Release versions are stable `MAJOR.MINOR.PATCH` identifiers. Tags are
-`v<version>`, for example `v0.2.0`. The initial version is `0.1.0`.
+`v<version>`, for example `v0.2.1`. The initial version is `0.1.0`.
 
 Releases are deliberately manual. Ordinary pushes and pull requests never
 create tags or GitHub Releases.
@@ -178,6 +185,7 @@ authorization.
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 0.2.1 | 2026-11-25 | `open` probes remote terminfo with `infocmp` and falls back to a supported TERM when the local one is missing remotely (for example `xterm-ghostty`), with offline tests and README terminal-compatibility notes. |
 | 0.2.0 | 2026-11-25 | Add `install.sh` as a release asset with latest/pinned installs, package-manager detection, SHA-256 verification, and a source fallback. README now documents install.sh as the only installation method. |
 | 0.1.0 | 2026-11-25 | Initial CLI: open/list/kill, reconnect, explicit `sst update` for source/DEB/RPM/pacman installs, source install, DEB/RPM/Arch packages, CI and manual release workflow. |
 
