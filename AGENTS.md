@@ -217,6 +217,7 @@ authorization.
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 0.3.0 | 2026-11-28 | Added the gh-pages package-repository site (latest-only, single orphan commit per release) serving unsigned apt/dnf/pacman upgrade repositories, with per-family consumption smoke tests in CI and `packaging/site-build.sh`. |
 | 0.2.1 | 2026-11-25 | `open` probes remote terminfo with `infocmp` and falls back to a supported TERM when the local one is missing remotely (for example `xterm-ghostty`), with offline tests and README terminal-compatibility notes. |
 | 0.2.0 | 2026-11-25 | Add `install.sh` as a release asset with latest/pinned installs, package-manager detection, SHA-256 verification, and a source fallback. README now documents install.sh as the only installation method. |
 | 0.1.0 | 2026-11-25 | Initial CLI: open/list/kill, reconnect, explicit `sst update` for source/DEB/RPM/pacman installs, source install, DEB/RPM/Arch packages, CI and manual release workflow. |

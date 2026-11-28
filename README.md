@@ -66,7 +66,7 @@ overwritten directly.
 To install a specific stable version:
 
 ```sh
-curl -fsSL https://github.com/opensst/opensst/releases/latest/download/install.sh | bash -s -- --version 0.2.1
+curl -fsSL https://github.com/opensst/opensst/releases/latest/download/install.sh | bash -s -- --version 0.3.0
 ```
 
 Use only one installation method. Do not mix a package install under
@@ -331,9 +331,9 @@ named `opensst` even though the installed command is `sst`.
 
 ```sh
 make check                 # Bash syntax checks plus the full test suite
-make package-deb VERSION=0.2.1
-make package-rpm VERSION=0.2.1
-make package-arch VERSION=0.2.1
+make package-deb VERSION=0.3.0
+make package-rpm VERSION=0.3.0
+make package-arch VERSION=0.3.0
 ```
 
 Tests run the real executable with a fake `ssh` on `PATH`; they never contact

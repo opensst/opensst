@@ -130,7 +130,7 @@ test_help() {
 test_version() {
   run_capture "$SST" --version
   assert_eq "$STATUS" 0 "sst --version exits 0"
-  assert_eq "$OUTPUT" "sst 0.2.1" "sst --version prints the embedded version"
+  assert_eq "$OUTPUT" "sst 0.3.0" "sst --version prints the embedded version"
 
   run_capture "$SST" --help
   assert_contains "$OUTPUT" "sst --version" "help documents --version"
@@ -156,7 +156,7 @@ test_version_helpers() {
   run_sourced _sst_version_cmp 0.1.0 0.1.0
   assert_eq "$OUTPUT" eq "equal versions compare eq"
 
-  run_sourced _sst_version_cmp 0.2.1 0.1.9
+  run_sourced _sst_version_cmp 0.3.0 0.1.9
   assert_eq "$OUTPUT" gt "newer version compares gt"
 
   for pair in 'deb opensst.deb' 'rpm opensst.rpm' 'pacman opensst.pkg.tar.zst' 'source sst'; do
@@ -255,7 +255,7 @@ test_update_version_readers() {
   assert_eq "$OUTPUT" 0.1.1-1 "pacman asset version"
 
   run_sourced _sst_installed_version source "$exe"
-  assert_eq "$OUTPUT" 0.2.1 "source installed version"
+  assert_eq "$OUTPUT" 0.3.0 "source installed version"
 
   printf "SST_VERSION='0.1.1'\n" >"$file"
   run_sourced _sst_asset_version source "$file"
@@ -415,7 +415,7 @@ make_installer_path() {
   fi
   cat >"$dir/sst" <<'EOF'
 #!/bin/bash
-printf 'sst %s\n' "${FAKE_INSTALLED_VERSION:-0.2.1}"
+printf 'sst %s\n' "${FAKE_INSTALLED_VERSION:-0.3.0}"
 EOF
   chmod +x "$dir/sst"
 }
@@ -470,7 +470,7 @@ run_installer() {
     FAKE_PKG_FAIL="${FAKE_PKG_FAIL-}" \
     FAKE_SUDO_LOG="$TMP/install-sudo.log" \
     FAKE_SUDO_FAIL="${FAKE_SUDO_FAIL-}" \
-    FAKE_INSTALLED_VERSION="${FAKE_INSTALLED_VERSION-0.2.1}" \
+    FAKE_INSTALLED_VERSION="${FAKE_INSTALLED_VERSION-0.3.0}" \
     /bin/bash "$INSTALL" "$@" >"$TMP/stdout" 2>"$TMP/stderr"
   STATUS=$?
   OUTPUT=$(<"$TMP/stdout")
@@ -479,7 +479,7 @@ run_installer() {
 
 test_install_script() {
   local base="$TMP/installer"
-  local rel_latest="$base/release-latest" rel_pinned="$base/release-v0.2.1"
+  local rel_latest="$base/release-latest" rel_pinned="$base/release-v0.3.0"
   local rel_bad="$base/release-bad" rel_invalid="$base/release-invalid"
   local p_pacman="$base/path-pacman" p_apt="$base/path-apt"
   local p_dpkg="$base/path-dpkg" p_dnf="$base/path-dnf" p_yum="$base/path-yum"
@@ -488,11 +488,11 @@ test_install_script() {
 
   rm -rf "$base"
   mkdir -p "$base" "$empty"
-  installer_release "$rel_latest" 0.2.1
-  installer_release "$rel_pinned" 0.2.1
-  installer_release "$rel_bad" 0.2.1
+  installer_release "$rel_latest" 0.3.0
+  installer_release "$rel_pinned" 0.3.0
+  installer_release "$rel_bad" 0.3.0
   printf 'corrupt\n' >"$rel_bad/opensst.deb"
-  installer_release "$rel_invalid" 0.2.1
+  installer_release "$rel_invalid" 0.3.0
   cat >"$rel_invalid/sst" <<'EOF'
 #!/bin/bash
 printf 'not-a-version\n'
@@ -529,15 +529,15 @@ EOF
     "releases/latest/download/opensst.pkg.tar.zst" "Arch uses the stable alias"
   assert_file_contains "$TMP/install-sudo.log" "pacman -U --noconfirm" \
     "Arch installs with pacman -U"
-  assert_contains "$OUTPUT" "0.2.1" "Arch install reports the installed version"
+  assert_contains "$OUTPUT" "0.3.0" "Arch install reports the installed version"
 
-  FAKE_CURL_DIR="$rel_pinned" run_installer "$p_pacman" --version 0.2.1
+  FAKE_CURL_DIR="$rel_pinned" run_installer "$p_pacman" --version 0.3.0
   assert_eq "$STATUS" 0 "pinned Arch install succeeds"
   assert_file_contains "$TMP/install-curl.log" \
-    "releases/download/v0.2.1/opensst-0.2.1-1-any.pkg.tar.zst" \
+    "releases/download/v0.3.0/opensst-0.3.0-1-any.pkg.tar.zst" \
     "pinned Arch uses the versioned asset"
 
-  FAKE_CURL_DIR="$rel_pinned" run_installer "$p_pacman" --version=0.2.1
+  FAKE_CURL_DIR="$rel_pinned" run_installer "$p_pacman" --version=0.3.0
   assert_eq "$STATUS" 0 "installer accepts --version=VERSION"
 
   FAKE_CURL_DIR="$rel_latest" run_installer "$p_apt"
@@ -573,12 +573,12 @@ EOF
     "pacman is selected when both tools exist"
 
   rm -rf "$prefix"
-  FAKE_CURL_DIR="$rel_latest" FAKE_INSTALLED_VERSION=0.2.1 \
+  FAKE_CURL_DIR="$rel_latest" FAKE_INSTALLED_VERSION=0.3.0 \
     run_installer "$p_none" --prefix "$prefix"
   assert_eq "$STATUS" 0 "source fallback succeeds"
   assert_executable "$prefix/bin/sst" "source fallback installs an executable"
   run_capture "$prefix/bin/sst" --version
-  assert_eq "$OUTPUT" "sst 0.2.1" "source fallback installs the requested version"
+  assert_eq "$OUTPUT" "sst 0.3.0" "source fallback installs the requested version"
   assert_eq "$(wc -l <"$TMP/install-sudo.log")" 0 \
     "a writable prefix does not use sudo"
 
@@ -1319,14 +1319,14 @@ test_arch_package() {
   fi
   local out="$TMP/arch"
   mkdir -p "$out"
-  "$ROOT/packaging/build-arch.sh" 0.2.1 "$out" >"$TMP/stdout" 2>"$TMP/stderr"
+  "$ROOT/packaging/build-arch.sh" 0.3.0 "$out" >"$TMP/stdout" 2>"$TMP/stderr"
   STATUS=$?
   assert_eq "$STATUS" 0 "arch package build succeeds"
-  local pkg="$out/opensst-0.2.1-1-any.pkg.tar.zst"
+  local pkg="$out/opensst-0.3.0-1-any.pkg.tar.zst"
   assert_file "$pkg" "arch package has the expected filename"
   assert_contains "$(bsdtar -xOf "$pkg" .PKGINFO)" "pkgname = opensst" \
     "arch PKGINFO names opensst"
-  assert_contains "$(bsdtar -xOf "$pkg" .PKGINFO)" "pkgver = 0.2.1-1" \
+  assert_contains "$(bsdtar -xOf "$pkg" .PKGINFO)" "pkgver = 0.3.0-1" \
     "arch PKGINFO records version"
   assert_contains "$(bsdtar -tf "$pkg")" "usr/bin/sst" \
     "arch package installs /usr/bin/sst"
@@ -1339,11 +1339,11 @@ test_release_assets() {
   chmod +x "$dist/sst"
   cp "$INSTALL" "$dist/install.sh"
   chmod +x "$dist/install.sh"
-  printf 'deb\n' >"$dist/opensst_0.2.1_all.deb"
-  printf 'rpm\n' >"$dist/opensst-0.2.1-1.noarch.rpm"
-  printf 'arch\n' >"$dist/opensst-0.2.1-1-any.pkg.tar.zst"
+  printf 'deb\n' >"$dist/opensst_0.3.0_all.deb"
+  printf 'rpm\n' >"$dist/opensst-0.3.0-1.noarch.rpm"
+  printf 'arch\n' >"$dist/opensst-0.3.0-1-any.pkg.tar.zst"
 
-  "$ROOT/packaging/release-assets.sh" 0.2.1 "$dist" >"$TMP/stdout" 2>"$TMP/stderr"
+  "$ROOT/packaging/release-assets.sh" 0.3.0 "$dist" >"$TMP/stdout" 2>"$TMP/stderr"
   STATUS=$?
   assert_eq "$STATUS" 0 "release assets script succeeds"
   local file
@@ -1359,11 +1359,11 @@ test_release_assets() {
     "checksums include the raw source asset"
   assert_file_contains "$dist/SHA256SUMS" "  install.sh" \
     "checksums include install.sh"
-  assert_file_contains "$dist/SHA256SUMS" "opensst_0.2.1_all.deb" \
+  assert_file_contains "$dist/SHA256SUMS" "opensst_0.3.0_all.deb" \
     "checksums include the versioned DEB"
 
   rm -f "$dist/install.sh"
-  "$ROOT/packaging/release-assets.sh" 0.2.1 "$dist" >"$TMP/stdout" 2>"$TMP/stderr"
+  "$ROOT/packaging/release-assets.sh" 0.3.0 "$dist" >"$TMP/stdout" 2>"$TMP/stderr"
   STATUS=$?
   assert_eq "$STATUS" 1 "release assets refuses a missing install.sh"
   cp "$INSTALL" "$dist/install.sh"
@@ -1371,12 +1371,12 @@ test_release_assets() {
 
   printf "#!/bin/bash\nSST_VERSION='9.9.9'\n" >"$dist/sst"
   chmod +x "$dist/sst"
-  "$ROOT/packaging/release-assets.sh" 0.2.1 "$dist" >"$TMP/stdout" 2>"$TMP/stderr"
+  "$ROOT/packaging/release-assets.sh" 0.3.0 "$dist" >"$TMP/stdout" 2>"$TMP/stderr"
   STATUS=$?
   assert_eq "$STATUS" 1 "release assets refuses a raw script with the wrong version"
 
   rm -f "$dist/opensst.rpm"
-  "$ROOT/packaging/release-assets.sh" 0.2.1 "$dist" >"$TMP/stdout" 2>"$TMP/stderr"
+  "$ROOT/packaging/release-assets.sh" 0.3.0 "$dist" >"$TMP/stdout" 2>"$TMP/stderr"
   STATUS=$?
   assert_eq "$STATUS" 1 "release assets refuses a missing versioned package"
 }
@@ -1386,13 +1386,13 @@ test_packages() {
     local debdir="$TMP/deb"
     rm -rf "$debdir"
     mkdir -p "$debdir"
-    "$ROOT/packaging/build-deb.sh" 0.2.1 "$debdir" >"$TMP/stdout" 2>"$TMP/stderr"
+    "$ROOT/packaging/build-deb.sh" 0.3.0 "$debdir" >"$TMP/stdout" 2>"$TMP/stderr"
     STATUS=$?
     assert_eq "$STATUS" 0 "deb build succeeds"
-    local deb="$debdir/opensst_0.2.1_all.deb"
+    local deb="$debdir/opensst_0.3.0_all.deb"
     assert_file "$deb" "deb build creates the expected filename"
     assert_eq "$(dpkg-deb -f "$deb" Package)" opensst "deb package is named opensst"
-    assert_eq "$(dpkg-deb -f "$deb" Version)" 0.2.1 "deb version matches"
+    assert_eq "$(dpkg-deb -f "$deb" Version)" 0.3.0 "deb version matches"
     assert_eq "$(dpkg-deb -f "$deb" Architecture)" all "deb is architecture-independent"
     assert_contains "$(dpkg-deb -f "$deb" Depends)" "openssh-client" "deb depends on the OpenSSH client"
     if dpkg-deb -c "$deb" | grep -Fq './usr/bin/sst'; then
@@ -1408,10 +1408,10 @@ test_packages() {
     local rpmdir="$TMP/rpm"
     rm -rf "$rpmdir"
     mkdir -p "$rpmdir"
-    "$ROOT/packaging/build-rpm.sh" 0.2.1 "$rpmdir" >"$TMP/stdout" 2>"$TMP/stderr"
+    "$ROOT/packaging/build-rpm.sh" 0.3.0 "$rpmdir" >"$TMP/stdout" 2>"$TMP/stderr"
     STATUS=$?
     assert_eq "$STATUS" 0 "rpm build succeeds"
-    local rpm_file="$rpmdir/opensst-0.2.1-1.noarch.rpm"
+    local rpm_file="$rpmdir/opensst-0.3.0-1.noarch.rpm"
     assert_file "$rpm_file" "rpm build creates the expected filename"
     assert_eq "$(rpm -qp --qf '%{NAME}' "$rpm_file")" opensst "rpm package is named opensst"
     assert_eq "$(rpm -qp --qf '%{ARCH}' "$rpm_file")" noarch "rpm is architecture-independent"
@@ -1828,7 +1828,7 @@ test_documentation() {
     '/usr/local/bin' \
     '/usr/bin/sst' \
     'releases/latest/download/install.sh' \
-    'bash -s -- --version 0.2.1' \
+    'bash -s -- --version 0.3.0' \
     '30 seconds' \
     '2 seconds' \
     'Serverless SST' \
@@ -1852,7 +1852,7 @@ test_documentation() {
   done
 
   for needle in 'Release' 'Version History' 'explicit' 'workflow_dispatch' \
-    'make check' '0.2.1' 'install.sh' 'sst update' 'SST_VERSION' 'pacman' \
+    'make check' '0.3.0' 'install.sh' 'sst update' 'SST_VERSION' 'pacman' \
     'stable aliases' 'site-build.sh' 'gh-pages' 'orphan' 'Pages activation' \
     'latest-only' 'publish-site'; do
     assert_file_contains "$agents" "$needle" "AGENTS documents '$needle'"

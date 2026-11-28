@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -u
 
-SST_VERSION='0.2.1'
+SST_VERSION='0.3.0'
 _SST_RELEASE_BASE='https://github.com/opensst/opensst/releases/latest/download'
 _SST_UPDATE_TMP=''
 
