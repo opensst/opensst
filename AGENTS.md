@@ -14,6 +14,9 @@ tests/fixtures/bin/      Fake package tools, downloaders, and sudo for update te
 packaging/build-deb.sh   Builds opensst_<version>_all.deb
 packaging/build-rpm.sh   Builds opensst-<version>-1.noarch.rpm
 packaging/build-arch.sh  Builds opensst-<version>-1-any.pkg.tar.zst
+packaging/site-build.sh  Builds one family (deb|rpm|arch) of the gh-pages
+                          repository site from release packages
+packaging/site-index.html Template for the site's index page
 packaging/release-assets.sh Creates stable aliases and SHA256SUMS
 .github/workflows/ci.yml Continuous integration and package smoke tests
 .github/workflows/release.yml Manually triggered verified release
@@ -121,8 +124,23 @@ host. The fake SSH fixture is the only SSH executable tests may reach.
 - pacman: `arch=('any')`; dependencies `bash`, `openssh`, `curl`.
 - tmux is intentionally not a local package dependency; it belongs on the
   remote host.
-- Do not maintain a self-hosted apt/dnf/pacman repository in this project.
-  Packages are GitHub Release assets with `SHA256SUMS`.
+- Do not host any package repository outside GitHub. The only hosting
+  surfaces are GitHub Release assets (the installation contract, with
+  `SHA256SUMS`) and the static `gh-pages` branch of this repository (the
+  optional upgrade channel for apt/dnf/pacman). No external hosts, no
+  mirrors, no signing keys. The `gh-pages` site is latest-only, published
+  as a single orphan commit per release, and its package files are
+  byte-identical to that release's assets; it adds an indirection, not a
+  new trust root. The repositories are not signed: users opt in per
+  repository (`[trusted=yes]`, `gpgcheck=0`, `SigLevel = Never`), and the
+  documented trust boundary (HTTPS + the GitHub account as publisher)
+  matches `install.sh`. CI smoke tests assert consumption is
+  warning-free.
+- `packaging/site-build.sh` rebuilds one family's site section from
+  that release's package artifacts. The pacman database is a regular
+  file named `opensst.db` with exactly one entry (repo-add cannot
+  accumulate versions); RPM repodata compression is pinned to gzip.
+  `install.sh` never modifies system package-manager configuration.
 - Do not add automatic privilege escalation to Makefile targets.
 - Keep DEB, RPM, and pacman paths aligned at `/usr/bin/sst`.
 - Every release publishes stable aliases (`sst`, `install.sh`, `opensst.deb`,
@@ -140,7 +158,11 @@ repository permissions. It runs `make check`, builds a DEB and installs it on
 Ubuntu, builds an RPM and installs it in a clean Fedora container, builds an
 Arch package in an `archlinux:latest` container as a non-root user and installs
 it with `pacman -U`, verifies `sst --help` and `sst --version`, and uploads
-package artifacts for inspection.
+package artifacts for inspection. Each package job also generates its family's
+repository site section and consumes it for real (apt with a `file://` source
+and `[trusted=yes]`, dnf with `--repofrompath` and `gpgcheck=0`, pacman with a
+temporary config and `SigLevel = Never`), asserting the repositories are
+usable and warning-free.
 
 ## Release process
 
@@ -163,13 +185,15 @@ create tags or GitHub Releases.
 5. Manually run the **Release** workflow (`workflow_dispatch`) with the exact
    version. Never invent, reuse, or move a published version.
 6. Wait for validation, test, DEB smoke-test, RPM smoke-test, and Arch
-   smoke-test jobs to pass.
+   smoke-test jobs to pass, and for the `publish-site` job to rebuild the
+   `gh-pages` repository site.
 7. Verify the annotated `v<version>` tag, the GitHub Release notes, and the
    uploaded `sst`, `install.sh`, `opensst.deb`, `opensst.rpm`,
    `opensst.pkg.tar.zst`, versioned package assets, and `SHA256SUMS`. Verify
    the stable aliases match the versioned files, that
    `releases/latest/download/install.sh` is reachable, and that `sst --version`
-   reports the release version.
+   reports the release version. Verify the gh-pages site serves the new
+   version's repositories (after the Pages deploy settles).
 8. When appropriate, verify installation and a real `sst update` from the
    published assets.
 
@@ -177,6 +201,14 @@ The workflow is idempotent: an existing tag is reused only when it points to
 the selected commit, and an existing Release is left unchanged. A tag at a
 different commit is a hard failure. Never delete or replace a published
 Release to bypass a failure; investigate and release a new patch version.
+The `publish-site` job runs after `release` and force-pushes the `gh-pages`
+branch as one orphan commit per release (latest-only, no history growth) —
+the site never advertises a version whose Release failed to publish. A failed
+site publish is repaired by re-dispatching the same version: the workflow
+rebuilds and force-pushes; no published Release is touched. Pages activation
+(a one-time manual maintainer step: Settings → Pages → deploy from branch
+`gh-pages`, root, performed before the first site release) is never done by
+the workflow; it never changes repository settings.
 Versioning, commits, tags, pushes, package publication, GitHub Release
 creation, and repository metadata changes each require explicit maintainer
 authorization.

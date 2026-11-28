@@ -1840,13 +1840,21 @@ test_documentation() {
     'pacman -U' \
     'curl or wget' \
     'missing or unsuitable terminal' \
-    'checksums are not signatures'; do
+    'checksums are not signatures' \
+    'Upgrades via your system package manager' \
+    'opensst.github.io/opensst' \
+    'deb [trusted=yes]' \
+    'baseurl=https://opensst.github.io/opensst/rpm' \
+    'SigLevel = Never' \
+    'not signed' \
+    'byte-identical'; do
     assert_file_contains "$readme" "$needle" "README documents '$needle'"
   done
 
   for needle in 'Release' 'Version History' 'explicit' 'workflow_dispatch' \
     'make check' '0.2.1' 'install.sh' 'sst update' 'SST_VERSION' 'pacman' \
-    'stable aliases'; do
+    'stable aliases' 'site-build.sh' 'gh-pages' 'orphan' 'Pages activation' \
+    'latest-only' 'publish-site'; do
     assert_file_contains "$agents" "$needle" "AGENTS documents '$needle'"
   done
 

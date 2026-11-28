@@ -86,6 +86,63 @@ The installer follows the same trust boundary as `sst update`: the Release
 channel is trusted over HTTPS, and `SHA256SUMS` detects corruption but is not a
 signature.
 
+Installing is separate from upgrading: `install.sh` never modifies your
+package-manager configuration, but you can opt in to repository-based upgrades
+afterwards — see [Upgrades via your system package
+manager](#upgrades-via-your-system-package-manager).
+
+## Upgrades via your system package manager
+
+Every release also publishes a static package-repository site at
+<https://opensst.github.io/opensst> (served from this repository's `gh-pages`
+branch). Adding it to your package manager gets you `opensst` upgrades through
+your normal system upgrades. The site always serves the latest release, and
+its package files are byte-identical to that release's GitHub assets.
+
+**apt** (Debian, Ubuntu) — create `/etc/apt/sources.list.d/opensst.list`:
+
+```ini
+deb [trusted=yes] https://opensst.github.io/opensst/deb ./
+```
+
+**dnf** (Fedora, RHEL) — create `/etc/yum.repos.d/opensst.repo`:
+
+```ini
+[opensst]
+baseurl=https://opensst.github.io/opensst/rpm
+gpgcheck=0
+```
+
+**pacman** (Arch) — append to `/etc/pacman.conf`:
+
+```ini
+[opensst]
+Server = https://opensst.github.io/opensst/arch
+SigLevel = Never
+```
+
+Then upgrade as usual: `sudo apt update && sudo apt upgrade`,
+`sudo dnf upgrade`, or `sudo pacman -Syu`.
+
+These repositories are not signed. The per-repository settings above
+(`[trusted=yes]`, `gpgcheck=0`, `SigLevel = Never`) opt in for this repository
+only. Transport is HTTPS, the trust root is this GitHub repository, and the
+package bytes are byte-identical to the release assets, so you can verify them
+against the `SHA256SUMS` published on the release page — the same trust
+boundary as `install.sh` and `sst update`; checksums are not signatures.
+Support floor: apt ≥ 1.5, dnf4, pacman ≥ 6.
+
+On Arch, installing from the repository also stops `opensst` from being a
+foreign package, so AUR helpers no longer report it as "not in AUR" during
+system updates.
+
+The repository complements `sst update` instead of replacing it: both channels
+install the same bytes from the same release, so use whichever is more
+convenient (`sst update` is a no-op when you are already current, and source
+installs under `/usr/local/bin` are only covered by `sst update`). Only the
+latest release is served; older versions remain downloadable from the GitHub
+release pages (`pacman -U`, `dpkg -i`, `dnf install <url>`).
+
 ## Usage
 
 ```text
