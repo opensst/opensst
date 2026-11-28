@@ -216,3 +216,46 @@ jobs:
               "dist/opensst-${VERSION}-1-any.pkg.tar.zst" \
               dist/SHA256SUMS
           fi
+
+  publish-site:
+    name: Publish gh-pages repository site
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ inputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: opensst-*
+          merge-multiple: true
+          path: dist
+      - name: Install index tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dpkg-dev apt-utils createrepo-c
+      - name: Build the deb and rpm site sections
+        run: |
+          packaging/site-build.sh "$VERSION" deb dist site
+          packaging/site-build.sh "$VERSION" rpm dist site
+      - name: Build the arch site section
+        run: |
+          docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/work" -w /work \
+            archlinux:latest packaging/site-build.sh "$VERSION" arch dist site
+      - name: Publish the orphan gh-pages commit
+        run: |
+          cd site
+          git init -b gh-pages
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m "opensst $VERSION"
+          count=$(git rev-list --count HEAD)
+          if [ "$count" -ne 1 ]; then
+            echo "gh-pages would carry $count commits; the site must be a single orphan commit" >&2
+            exit 1
+          fi
+          git push -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" gh-pages
