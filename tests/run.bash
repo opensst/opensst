@@ -1656,6 +1656,103 @@ test_site_build_deb() {
     "site deb re-run regenerates the same Packages"
 }
 
+test_site_build_rpm() {
+  if ! command -v rpmbuild >/dev/null 2>&1 || ! command -v rpm >/dev/null 2>&1 \
+    || ! command -v createrepo_c >/dev/null 2>&1; then
+    printf '# skip site build rpm test: rpmbuild/rpm/createrepo_c is unavailable\n'
+    return
+  fi
+  local version sb dist site pkg primary zst_count
+  version=$(sed -n "s/^SST_VERSION='\([0-9.]*\)'$/\1/p" "$SST" | head -n 1)
+  sb="$ROOT/packaging/site-build.sh"
+  dist="$TMP/site-rpm-dist"
+  site="$TMP/site-rpm"
+  mkdir -p "$dist" "$site"
+  "$ROOT/packaging/build-rpm.sh" "$version" "$dist" >"$TMP/stdout" 2>"$TMP/stderr"
+  STATUS=$?
+  assert_eq "$STATUS" 0 "site build rpm builds a real rpm"
+  pkg="opensst-$version-1.noarch.rpm"
+
+  run_capture "$sb" rpm "$version" "$dist" "$site"
+  assert_eq "$STATUS" 0 "site-build rpm succeeds"
+  assert_file "$site/rpm/$pkg" "site rpm contains the package"
+  assert_file "$site/rpm/repodata/repomd.xml" "site rpm contains repomd.xml"
+
+  primary=$(grep -o 'href="repodata/[^"]*primary[^"]*"' "$site/rpm/repodata/repomd.xml" \
+    | head -n1 | sed 's/^href="//; s/"$//; s|^repodata/||')
+  assert_ne "$primary" "" "repomd.xml references primary metadata"
+  if [[ $primary == *.gz ]]; then
+    assert_contains "$(gzip -dc "$site/rpm/repodata/$primary")" '<name>opensst</name>' \
+      "rpm primary metadata names opensst"
+    assert_contains "$(gzip -dc "$site/rpm/repodata/$primary")" "ver=\"$version\"" \
+      "rpm primary metadata records the version"
+  else
+    assert_contains "$(cat "$site/rpm/repodata/$primary")" '<name>opensst</name>' \
+      "rpm primary metadata names opensst"
+    assert_contains "$(cat "$site/rpm/repodata/$primary")" "ver=\"$version\"" \
+      "rpm primary metadata records the version"
+  fi
+  zst_count=$(find "$site/rpm/repodata" -name '*.zst' | wc -l)
+  assert_eq "$zst_count" 0 "rpm repodata uses gzip, not zstd"
+}
+
+test_site_index() {
+  local version sb dist site family template_count
+  version=$(sed -n "s/^SST_VERSION='\([0-9.]*\)'$/\1/p" "$SST" | head -n 1)
+  sb="$ROOT/packaging/site-build.sh"
+  dist="$TMP/site-index-dist"
+  site="$TMP/site-index"
+  rm -rf "$dist" "$site"
+  mkdir -p "$dist" "$site"
+
+  assert_file "$ROOT/packaging/site-index.html" "site index template exists"
+  template_count=$(grep -c -F '{{VERSION}}' "$ROOT/packaging/site-index.html")
+  assert_eq "$template_count" 1 "site index template carries the version placeholder"
+
+  family=
+  if command -v makepkg >/dev/null 2>&1 && command -v bsdtar >/dev/null 2>&1 \
+    && command -v repo-add >/dev/null 2>&1 && (( EUID != 0 )); then
+    "$ROOT/packaging/build-arch.sh" "$version" "$dist" >"$TMP/stdout" 2>"$TMP/stderr"
+    family=arch
+  elif command -v dpkg-deb >/dev/null 2>&1 && command -v dpkg-scanpackages >/dev/null 2>&1 \
+    && command -v apt-ftparchive >/dev/null 2>&1; then
+    "$ROOT/packaging/build-deb.sh" "$version" "$dist" >"$TMP/stdout" 2>"$TMP/stderr"
+    family=deb
+  fi
+
+  if [[ -n $family ]]; then
+    run_capture "$sb" "$family" "$version" "$dist" "$site"
+    assert_eq "$STATUS" 0 "site index generator succeeds via $family"
+    assert_file "$site/.nojekyll" "site writes .nojekyll"
+    if [[ -f $site/.nojekyll && ! -s $site/.nojekyll ]]; then
+      pass "site .nojekyll is empty"
+    else
+      fail "site .nojekyll is empty (got: $site/.nojekyll)"
+    fi
+    assert_file "$site/index.html" "site writes index.html"
+    assert_file_contains "$site/index.html" "$version" \
+      "site index names the version"
+    assert_not_contains "$(cat "$site/index.html")" '{{VERSION}}' \
+      "site index substitutes the template version"
+    assert_file_contains "$site/index.html" "SigLevel = Never" \
+      "site index documents pacman SigLevel"
+    assert_file_contains "$site/index.html" "trusted=yes" \
+      "site index documents apt trusted"
+    assert_file_contains "$site/index.html" "gpgcheck=0" \
+      "site index documents dnf gpgcheck"
+    assert_file_contains "$site/index.html" "https://opensst.github.io/opensst" \
+      "site index documents the site URL"
+  else
+    # No index toolchain at all: a tool-gated failure must not publish the
+    # site root either.
+    printf 'fake\n' >"$dist/opensst_${version}_all.deb"
+    run_capture "$sb" deb "$version" "$dist" "$site"
+    assert_eq "$STATUS" 127 "site index failure path stops at a tool gate"
+    assert_absent "$site/.nojekyll" "failed run writes no .nojekyll"
+    assert_absent "$site/index.html" "failed run writes no index.html"
+  fi
+}
+
 test_help
 test_version
 test_version_helpers
@@ -1689,6 +1786,8 @@ test_ci_workflow
 test_site_build_validation
 test_site_build_arch
 test_site_build_deb
+test_site_build_rpm
+test_site_index
 
 test_documentation() {
   local readme="$ROOT/README.md" agents="$ROOT/AGENTS.md" license="$ROOT/LICENSE"

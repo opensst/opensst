@@ -99,8 +99,18 @@ case $family in
     )
     ;;
   rpm)
-    printf 'site-build: createrepo_c not found; install createrepo-c\n' >&2
-    exit 127
+    if ! command -v createrepo_c >/dev/null 2>&1; then
+      printf 'site-build: createrepo_c not found; install createrepo-c\n' >&2
+      exit 127
+    fi
+    # gzip repodata is pinned: zstd-compressed metadata is unreadable by
+    # older dnf4 clients (support floor). The family subdirectory is
+    # rebuilt from scratch, like every family.
+    rm -rf "$site/rpm"
+    mkdir -p "$site/rpm"
+    cp "$dist/$pkg" "$site/rpm/.pkg.tmp"
+    mv "$site/rpm/.pkg.tmp" "$site/rpm/$pkg"
+    createrepo_c --compress-type=gz "$site/rpm"
     ;;
   arch)
     if ! command -v repo-add >/dev/null 2>&1; then
@@ -126,3 +136,8 @@ case $family in
     mv "$site/arch/.db.tmp" "$site/arch/opensst.db"
     ;;
 esac
+
+# Shared epilogue: every successful family build publishes the site root.
+# GitHub Pages would otherwise run Jekyll over the tree; .nojekyll opts out.
+printf '' >"$site/.nojekyll"
+sed "s/{{VERSION}}/$version/g" "$root/packaging/site-index.html" >"$site/index.html"
