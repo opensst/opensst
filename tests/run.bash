@@ -1546,6 +1546,70 @@ test_site_build_validation() {
     "arch invocation leaves the rpm directory untouched"
 }
 
+test_site_build_arch() {
+  if ! command -v makepkg >/dev/null 2>&1 || ! command -v bsdtar >/dev/null 2>&1 \
+    || ! command -v repo-add >/dev/null 2>&1 || (( EUID == 0 )); then
+    printf '# skip site build arch test: makepkg/bsdtar/repo-add is unavailable or running as root\n'
+    return
+  fi
+  local version sb dist site db pkg entries descs
+  version=$(sed -n "s/^SST_VERSION='\([0-9.]*\)'$/\1/p" "$SST" | head -n 1)
+  sb="$ROOT/packaging/site-build.sh"
+  dist="$TMP/site-arch-dist"
+  site="$TMP/site-arch"
+  mkdir -p "$dist" "$site"
+  "$ROOT/packaging/build-arch.sh" "$version" "$dist" >"$TMP/stdout" 2>"$TMP/stderr"
+  STATUS=$?
+  assert_eq "$STATUS" 0 "site build arch builds a real arch package"
+  pkg="opensst-$version-1-any.pkg.tar.zst"
+  db="$site/arch/opensst.db"
+
+  run_capture "$sb" arch "$version" "$dist" "$site"
+  assert_eq "$STATUS" 0 "site-build arch succeeds"
+
+  if [[ -f $db && ! -L $db ]]; then
+    pass "site arch db is a regular file, not a symlink"
+  else
+    fail "site arch db is a regular file, not a symlink (got: $db)"
+  fi
+  entries=$(ls -A "$site/arch" | wc -l | tr -d ' ')
+  assert_eq "$entries" 2 "site arch directory holds exactly two entries"
+  assert_file "$site/arch/$pkg" "site arch contains the package"
+  assert_file "$db" "site arch contains the database"
+  assert_absent "$site/arch/opensst.db.tar.gz" "site arch has no db.tar.gz sibling"
+  assert_absent "$site/arch/opensst.files" "site arch has no files database"
+  assert_absent "$site/arch/opensst.files.tar.gz" "site arch has no files database tarball"
+  assert_contains "$(bsdtar -xOf "$db" "opensst-$version-1/desc")" \
+    $'%FILENAME%\n'"$pkg" "site arch db records the package filename"
+  assert_contains "$(bsdtar -xOf "$db" "opensst-$version-1/desc")" \
+    $'%VERSION%\n'"$version-1" "site arch db records the version"
+  descs=$(bsdtar -tf "$db" | grep -c '/desc$')
+  assert_eq "$descs" 1 "site arch db has exactly one desc entry"
+
+  # Re-run semantics: stale files inside the family directory are removed,
+  # the database and package are regenerated, other families are untouched.
+  printf 'stale\n' >"$site/arch/leftover"
+  mkdir -p "$site/deb" "$site/rpm"
+  printf 'sentinel-deb\n' >"$site/deb/keep"
+  printf 'sentinel-rpm\n' >"$site/rpm/keep"
+  run_capture "$sb" arch "$version" "$dist" "$site"
+  assert_eq "$STATUS" 0 "site-build arch re-run succeeds"
+  assert_absent "$site/arch/leftover" "site-build arch removes stale files"
+  if [[ -f $db && ! -L $db ]]; then
+    pass "re-run keeps the db a regular file"
+  else
+    fail "re-run keeps the db a regular file (got: $db)"
+  fi
+  entries=$(ls -A "$site/arch" | wc -l | tr -d ' ')
+  assert_eq "$entries" 2 "re-run keeps exactly two entries"
+  descs=$(bsdtar -tf "$db" | grep -c '/desc$')
+  assert_eq "$descs" 1 "re-run db still has exactly one desc entry"
+  assert_file_contains "$site/deb/keep" 'sentinel-deb' \
+    "re-run leaves the deb directory untouched"
+  assert_file_contains "$site/rpm/keep" 'sentinel-rpm' \
+    "re-run leaves the rpm directory untouched"
+}
+
 test_help
 test_version
 test_version_helpers
@@ -1577,6 +1641,7 @@ test_release_assets
 test_release_workflow
 test_ci_workflow
 test_site_build_validation
+test_site_build_arch
 
 test_documentation() {
   local readme="$ROOT/README.md" agents="$ROOT/AGENTS.md" license="$ROOT/LICENSE"

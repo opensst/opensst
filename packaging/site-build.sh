@@ -83,7 +83,26 @@ case $family in
     exit 127
     ;;
   arch)
-    printf 'site-build: repo-add not found; install pacman\n' >&2
-    exit 127
+    if ! command -v repo-add >/dev/null 2>&1; then
+      printf 'site-build: repo-add not found; install pacman\n' >&2
+      exit 127
+    fi
+    # The family subdirectory is rebuilt from scratch: stale files from an
+    # earlier run are removed and other families are never touched.
+    rm -rf "$site/arch"
+    mkdir -p "$site/arch"
+    build=$(mktemp -d)
+    trap 'rm -rf "$build"' EXIT
+    cp "$dist/$pkg" "$site/arch/.pkg.tmp"
+    mv "$site/arch/.pkg.tmp" "$site/arch/$pkg"
+    cp "$dist/$pkg" "$build/$pkg"
+    # repo-add writes opensst.db.tar.gz plus an opensst.db symlink and
+    # files databases; only the materialized opensst.db is published
+    # (pacman requests exactly that name and git cannot store the symlink).
+    repo-add "$build/opensst.db.tar.gz" "$build/$pkg" >/dev/null
+    rm -f "$build/opensst.db"
+    mv "$build/opensst.db.tar.gz" "$build/opensst.db"
+    cp "$build/opensst.db" "$site/arch/.db.tmp"
+    mv "$site/arch/.db.tmp" "$site/arch/opensst.db"
     ;;
 esac
