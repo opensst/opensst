@@ -1830,6 +1830,8 @@ test_site_build_invocations() {
     "deb index uses a valid dpkg-scanpackages invocation"
   assert_not_contains "$(cat "$sb")" "--multivalue" \
     "deb index avoids the nonexistent multivalue option"
+  assert_file_contains "$sb" "createrepo_c --general-compress-type=gz" \
+    "rpm index pins gzip for every metadata file"
 }
 
 test_documentation() {

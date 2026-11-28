@@ -104,13 +104,16 @@ case $family in
       exit 127
     fi
     # gzip repodata is pinned: zstd-compressed metadata is unreadable by
-    # older dnf4 clients (support floor). The family subdirectory is
-    # rebuilt from scratch, like every family.
+    # older dnf4 clients (support floor). --general-compress-type governs
+    # primary, filelists, and other too; the plain --compress-type only
+    # covers additional metadata (comps, updateinfo) and leaves those
+    # three zstd-compressed. The family subdirectory is rebuilt from
+    # scratch, like every family.
     rm -rf "$site/rpm"
     mkdir -p "$site/rpm"
     cp "$dist/$pkg" "$site/rpm/.pkg.tmp"
     mv "$site/rpm/.pkg.tmp" "$site/rpm/$pkg"
-    createrepo_c --compress-type=gz "$site/rpm"
+    createrepo_c --general-compress-type=gz "$site/rpm"
     ;;
   arch)
     if ! command -v repo-add >/dev/null 2>&1; then
