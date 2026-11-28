@@ -1824,14 +1824,43 @@ test_harness_filter() {
 }
 
 test_site_build_invocations() {
-  local sb
+  local sb ci rel
   sb="$ROOT/packaging/site-build.sh"
+  ci="$ROOT/.github/workflows/ci.yml"
+  rel="$ROOT/.github/workflows/release.yml"
   assert_file_contains "$sb" "dpkg-scanpackages . >Packages" \
     "deb index uses a valid dpkg-scanpackages invocation"
   assert_not_contains "$(cat "$sb")" "--multivalue" \
     "deb index avoids the nonexistent multivalue option"
   assert_file_contains "$sb" "createrepo_c --general-compress-type=gz" \
     "rpm index pins gzip for every metadata file"
+
+  # The script contract is <family> <version> <dist-dir> <site-dir>; a
+  # swapped or missing family argument passed validation-free YAML and
+  # bash -n checks and only failed on real CI runs.
+  assert_file_contains "$ci" "packaging/site-build.sh deb \"\$VERSION\" dist site" \
+    "CI deb smoke passes the family first"
+  assert_file_contains "$ci" "packaging/site-build.sh arch '\$VERSION' dist site" \
+    "CI arch smoke passes the family first"
+  assert_file_contains "$ci" "packaging/site-build.sh rpm '\$VERSION' /repo/dist /site" \
+    "CI rpm smoke passes the family first"
+  assert_file_contains "$ci" "Consume the apt repository via apt-get" \
+    "CI smoke-tests apt repository consumption"
+  assert_file_contains "$ci" "Consume the RPM repository via dnf" \
+    "CI smoke-tests dnf repository consumption"
+  assert_file_contains "$ci" "Consume the pacman repository via pacman -Sy" \
+    "CI smoke-tests pacman repository consumption"
+
+  assert_file_contains "$rel" "packaging/site-build.sh deb \"\$VERSION\" dist site" \
+    "release deb site build passes the family first"
+  assert_file_contains "$rel" "packaging/site-build.sh rpm \"\$VERSION\" dist site" \
+    "release rpm site build passes the family first"
+  assert_file_contains "$rel" "packaging/site-build.sh arch \"\$VERSION\" dist site" \
+    "release arch site build passes the family first"
+  assert_file_contains "$rel" "publish-site" \
+    "release publishes the gh-pages site"
+  assert_file_contains "$rel" "rev-list --count HEAD" \
+    "release asserts the orphan commit count before pushing"
 }
 
 test_documentation() {

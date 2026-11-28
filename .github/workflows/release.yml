@@ -239,12 +239,12 @@ jobs:
           sudo apt-get install -y dpkg-dev apt-utils createrepo-c
       - name: Build the deb and rpm site sections
         run: |
-          packaging/site-build.sh "$VERSION" deb dist site
-          packaging/site-build.sh "$VERSION" rpm dist site
+          packaging/site-build.sh deb "$VERSION" dist site
+          packaging/site-build.sh rpm "$VERSION" dist site
       - name: Build the arch site section
         run: |
           docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/work" -w /work \
-            archlinux:latest packaging/site-build.sh "$VERSION" arch dist site
+            archlinux:latest packaging/site-build.sh arch "$VERSION" dist site
       - name: Publish the orphan gh-pages commit
         run: |
           cd site

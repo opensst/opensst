@@ -40,7 +40,7 @@ jobs:
       - name: Consume the apt repository via apt-get
         run: |
           set -o pipefail
-          packaging/site-build.sh "$VERSION" deb dist site
+          packaging/site-build.sh deb "$VERSION" dist site
           echo "deb [trusted=yes] file://$PWD/site/deb ./" \
             | sudo tee /etc/apt/sources.list.d/opensst-test.list >/dev/null
           : >/tmp/opensst-apt-err.log
@@ -86,7 +86,7 @@ jobs:
           mkdir -p site
           docker run --rm -v "$PWD:/repo:ro" -v "$PWD/site:/site" fedora:latest \
             bash -c "dnf install -y createrepo_c >/dev/null 2>&1 \
-              && cd /repo && packaging/site-build.sh '$VERSION' rpm /repo/dist /site \
+              && cd /repo && packaging/site-build.sh rpm '$VERSION' /repo/dist /site \
               && dnf --repofrompath=opensst,file:///site/rpm --setopt=opensst.gpgcheck=0 install -y opensst 2>/site/dnf-err.log \
               && sst --version | grep -Fx 'sst $VERSION'"
           if grep -Eq '^[Ww]arning' "$PWD/site/dnf-err.log"; then
@@ -130,7 +130,7 @@ jobs:
           sst --version
       - name: Build and verify the pacman repository site
         run: |
-          su - builder -c "cd '$GITHUB_WORKSPACE' && packaging/site-build.sh '$VERSION' dist site"
+          su - builder -c "cd '$GITHUB_WORKSPACE' && packaging/site-build.sh arch '$VERSION' dist site"
           su - builder -c "cd '$GITHUB_WORKSPACE' && SST_TESTS_FILTER='^test_site_build_arch\$' bash tests/run.bash"
       - name: Consume the pacman repository via pacman -Sy
         run: |
