@@ -1464,6 +1464,88 @@ test_ci_workflow() {
     "make check syntax-checks install.sh"
 }
 
+test_site_build_validation() {
+  if ! command -v makepkg >/dev/null 2>&1 || ! command -v bsdtar >/dev/null 2>&1 \
+    || (( EUID == 0 )); then
+    printf '# skip site build validation test: makepkg/bsdtar is unavailable or running as root\n'
+    return
+  fi
+  local version sb dist site empty_dist
+  version=$(sed -n "s/^SST_VERSION='\([0-9.]*\)'$/\1/p" "$SST" | head -n 1)
+  sb="$ROOT/packaging/site-build.sh"
+  dist="$TMP/site-dist"
+  site="$TMP/site-root"
+  empty_dist="$TMP/site-dist-empty"
+  mkdir -p "$dist" "$site" "$empty_dist"
+  "$ROOT/packaging/build-arch.sh" "$version" "$dist" >"$TMP/stdout" 2>"$TMP/stderr"
+  STATUS=$?
+  assert_eq "$STATUS" 0 "site build validation builds a real arch package"
+  assert_file "$dist/opensst-$version-1-any.pkg.tar.zst" \
+    "site build validation has the arch package"
+
+  run_capture "$sb" foo "$version" "$dist" "$site"
+  assert_eq "$STATUS" 2 "site-build rejects an unknown family"
+  assert_ne "$ERROR" "" "unknown family reports on stderr"
+
+  run_capture "$sb" arch 0x2 "$dist" "$site"
+  assert_eq "$STATUS" 2 "site-build rejects a malformed version"
+  assert_ne "$ERROR" "" "malformed version reports on stderr"
+
+  run_capture "$sb" arch 0.0.0 "$dist" "$site"
+  assert_eq "$STATUS" 2 "site-build rejects a version that differs from SST_VERSION"
+  assert_ne "$ERROR" "" "version mismatch reports on stderr"
+
+  run_capture "$sb" arch "$version" "$dist-missing" "$site"
+  assert_eq "$STATUS" 2 "site-build rejects a missing dist directory"
+  assert_ne "$ERROR" "" "missing dist directory reports on stderr"
+
+  run_capture "$sb" arch "$version" "$empty_dist" "$site"
+  assert_eq "$STATUS" 2 "site-build rejects a missing family package"
+  assert_ne "$ERROR" "" "missing family package reports on stderr"
+
+  run_capture "$sb" arch "$version" "$dist"
+  assert_eq "$STATUS" 2 "site-build rejects too few arguments"
+  assert_ne "$ERROR" "" "too few arguments reports on stderr"
+
+  run_capture "$sb" arch "$version" "$dist" "$site" extra
+  assert_eq "$STATUS" 2 "site-build rejects too many arguments"
+  assert_ne "$ERROR" "" "too many arguments reports on stderr"
+
+  assert_absent "$site/arch" "failed validation writes no site subdirectory"
+
+  # A valid invocation reaches the family generator. The skeleton's stub
+  # exits 127 naming repo-add; later tasks run the real generator there
+  # (0 with repo-add, 127 without). Validation itself must not have
+  # created the family subdirectory when the run stops at a tool gate.
+  run_capture "$sb" arch "$version" "$dist" "$site"
+  if [[ $STATUS -eq 0 ]]; then
+    pass "site-build accepts a valid arch invocation"
+  else
+    assert_eq "$STATUS" 127 "site-build arch stops at a tool gate"
+    assert_contains "$ERROR" "repo-add" "tool gate names repo-add"
+    assert_absent "$site/arch" "tool-gated run writes no site subdirectory"
+  fi
+
+  # Family isolation: an arch invocation never touches other families'
+  # subdirectories.
+  local site2
+  site2="$TMP/site-families"
+  mkdir -p "$site2/deb" "$site2/rpm" "$site2/arch"
+  printf 'sentinel-deb\n' >"$site2/deb/keep"
+  printf 'sentinel-rpm\n' >"$site2/rpm/keep"
+  printf 'stale\n' >"$site2/arch/leftover"
+  run_capture "$sb" arch "$version" "$dist" "$site2"
+  if [[ $STATUS -eq 0 || $STATUS -eq 127 ]]; then
+    pass "site-build arch tolerates a pre-populated site directory"
+  else
+    fail "site-build arch tolerates a pre-populated site directory (exit $STATUS)"
+  fi
+  assert_file_contains "$site2/deb/keep" 'sentinel-deb' \
+    "arch invocation leaves the deb directory untouched"
+  assert_file_contains "$site2/rpm/keep" 'sentinel-rpm' \
+    "arch invocation leaves the rpm directory untouched"
+}
+
 test_help
 test_version
 test_version_helpers
@@ -1494,6 +1576,7 @@ test_arch_package
 test_release_assets
 test_release_workflow
 test_ci_workflow
+test_site_build_validation
 
 test_documentation() {
   local readme="$ROOT/README.md" agents="$ROOT/AGENTS.md" license="$ROOT/LICENSE"
