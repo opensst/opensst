@@ -13,6 +13,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install index tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dpkg-dev apt-utils createrepo-c rpm
       - name: Run checks
         run: make check
 
@@ -33,6 +37,22 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y "./dist/opensst_${VERSION}_all.deb"
           sst --help
+      - name: Consume the apt repository via apt-get
+        run: |
+          set -o pipefail
+          packaging/site-build.sh "$VERSION" deb dist site
+          echo "deb [trusted=yes] file://$PWD/site/deb ./" \
+            | sudo tee /etc/apt/sources.list.d/opensst-test.list >/dev/null
+          : >/tmp/opensst-apt-err.log
+          sudo apt-get update 2>>/tmp/opensst-apt-err.log
+          sudo apt-get install -y --reinstall opensst 2>>/tmp/opensst-apt-err.log
+          sudo rm -f /etc/apt/sources.list.d/opensst-test.list
+          sst --version | grep -Fx "sst $VERSION"
+          if grep -Eq '^(W:|E:)' /tmp/opensst-apt-err.log; then
+            echo '::error::apt emitted warnings or errors (no-warning guarantee violated)' >&2
+            cat /tmp/opensst-apt-err.log >&2
+            exit 1
+          fi
       - name: Upload DEB artifact
         uses: actions/upload-artifact@v4
         with:
@@ -60,6 +80,20 @@ jobs:
         run: |
           docker run --rm -v "$PWD/dist:/dist:ro" fedora:latest \
             bash -c "dnf install -y /dist/opensst-${VERSION}-1.noarch.rpm && sst --help"
+      - name: Consume the RPM repository via dnf
+        run: |
+          set -o pipefail
+          mkdir -p site
+          docker run --rm -v "$PWD:/repo:ro" -v "$PWD/site:/site" fedora:latest \
+            bash -c "dnf install -y createrepo_c >/dev/null 2>&1 \
+              && cd /repo && packaging/site-build.sh '$VERSION' rpm /repo/dist /site \
+              && dnf --repofrompath=opensst,file:///site/rpm --setopt=opensst.gpgcheck=0 install -y opensst 2>/site/dnf-err.log \
+              && sst --version | grep -Fx 'sst $VERSION'"
+          if grep -Eq '^Warning' "$PWD/site/dnf-err.log"; then
+            echo '::error::dnf emitted warnings (no-warning guarantee violated)' >&2
+            cat "$PWD/site/dnf-err.log" >&2
+            exit 1
+          fi
       - name: Upload RPM artifact
         uses: actions/upload-artifact@v4
         with:
