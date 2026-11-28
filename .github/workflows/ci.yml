@@ -94,6 +94,30 @@ jobs:
           pacman -U --noconfirm "dist/opensst-${VERSION}-1-any.pkg.tar.zst"
           sst --help
           sst --version
+      - name: Build and verify the pacman repository site
+        run: |
+          su - builder -c "cd '$GITHUB_WORKSPACE' && packaging/site-build.sh '$VERSION' dist site"
+          su - builder -c "cd '$GITHUB_WORKSPACE' && SST_TESTS_FILTER='^test_site_build_arch\$' bash tests/run.bash"
+      - name: Consume the pacman repository via pacman -Sy
+        run: |
+          set -o pipefail
+          repo_root="$PWD/site/arch"
+          mkdir -p /tmp/sst-repo-db /tmp/sst-repo-cache
+          printf '[options]\nHoldPkg = pacman glibc\n\n[opensst]\nServer = file://%s\nSigLevel = Never\n' \
+            "$repo_root" >/tmp/opensst-pacman.conf
+          pacman -Sy --config /tmp/opensst-pacman.conf \
+            --dbpath /tmp/sst-repo-db --cachedir /tmp/sst-repo-cache 2>/tmp/opensst-err.log
+          pacman -S --noconfirm \
+            --assume-installed bash --assume-installed openssh --assume-installed curl \
+            --config /tmp/opensst-pacman.conf \
+            --dbpath /tmp/sst-repo-db --cachedir /tmp/sst-repo-cache \
+            opensst 2>>/tmp/opensst-err.log
+          sst --version | grep -Fx "sst $VERSION"
+          if grep -Ev '^(::|[[:space:]]*$)' /tmp/opensst-err.log | grep -q .; then
+            echo '::error::pacman emitted unexpected stderr (no-warning guarantee violated)' >&2
+            cat /tmp/opensst-err.log >&2
+            exit 1
+          fi
       - name: Upload Arch artifact
         uses: actions/upload-artifact@v4
         with:
