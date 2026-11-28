@@ -1753,41 +1753,70 @@ test_site_index() {
   fi
 }
 
-test_help
-test_version
-test_version_helpers
-test_update_detection
-test_update_version_readers
-test_update_download
-test_update_check
-test_update_source
-test_update_interaction
-test_update_packages
-test_install_script
-test_usage_errors
-test_project_names
-test_ssh_validation_accepts
-test_ssh_validation_rejects
-test_list_and_kill
-test_management_never_retries
-test_missing_remote_tmux
-test_missing_local_ssh
-test_open_requires_tty
-test_open_operation
-test_open_reconnects
-test_open_term_fallback
-test_source_install
-test_package_version_validation
-test_packages
-test_arch_package
-test_release_assets
-test_release_workflow
-test_ci_workflow
-test_site_build_validation
-test_site_build_arch
-test_site_build_deb
-test_site_build_rpm
-test_site_index
+run_test() {
+  local name=$1
+  if [[ -n ${SST_TESTS_FILTER:-} ]] && ! [[ $name =~ $SST_TESTS_FILTER ]]; then
+    printf '# skip %s: SST_TESTS_FILTER\n' "$name"
+    return
+  fi
+  "$name"
+}
+
+run_test test_help
+run_test test_version
+run_test test_version_helpers
+run_test test_update_detection
+run_test test_update_version_readers
+run_test test_update_download
+run_test test_update_check
+run_test test_update_source
+run_test test_update_interaction
+run_test test_update_packages
+run_test test_install_script
+run_test test_usage_errors
+run_test test_project_names
+run_test test_ssh_validation_accepts
+run_test test_ssh_validation_rejects
+run_test test_list_and_kill
+run_test test_management_never_retries
+run_test test_missing_remote_tmux
+run_test test_missing_local_ssh
+run_test test_open_requires_tty
+run_test test_open_operation
+run_test test_open_reconnects
+run_test test_open_term_fallback
+run_test test_source_install
+run_test test_package_version_validation
+run_test test_packages
+run_test test_arch_package
+run_test test_release_assets
+run_test test_release_workflow
+run_test test_ci_workflow
+run_test test_site_build_validation
+run_test test_site_build_arch
+run_test test_site_build_deb
+run_test test_site_build_rpm
+run_test test_site_index
+
+test_harness_filter() {
+  # Guard against recursion: the nested suite this test spawns must never
+  # spawn another one.
+  if [[ ${SST_TESTS_NESTED:-0} == 1 ]]; then
+    printf '# skip harness filter test: nested suite\n'
+    return
+  fi
+  local filtered
+  filtered=$(SST_TESTS_NESTED=1 SST_TESTS_FILTER='^test_documentation$' \
+    bash "$ROOT/tests/run.bash" 2>&1)
+  STATUS=$?
+  assert_eq "$STATUS" 0 "filtered suite exits 0"
+  assert_contains "$filtered" "README documents" \
+    "filtered run executes the selected test"
+  assert_not_contains "$filtered" "sst --help exits 0" \
+    "filtered run skips non-matching tests"
+  assert_contains "$filtered" "skip test_help: SST_TESTS_FILTER" \
+    "filtered run reports skipped tests"
+}
 
 test_documentation() {
   local readme="$ROOT/README.md" agents="$ROOT/AGENTS.md" license="$ROOT/LICENSE"
@@ -1826,7 +1855,8 @@ test_documentation() {
   done
 }
 
-test_documentation
+run_test test_documentation
+run_test test_harness_filter
 
 printf '\n%d tests, %d failures\n' "$tests" "$failures"
 (( failures == 0 ))
