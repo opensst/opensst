@@ -75,8 +75,28 @@ site=$(cd -- "$site" && pwd)
 
 case $family in
   deb)
-    printf 'site-build: dpkg-scanpackages/apt-ftparchive not found; install dpkg-dev and apt-utils\n' >&2
-    exit 127
+    if ! command -v dpkg-scanpackages >/dev/null 2>&1 \
+      || ! command -v apt-ftparchive >/dev/null 2>&1; then
+      printf 'site-build: dpkg-scanpackages/apt-ftparchive not found; install dpkg-dev and apt-utils\n' >&2
+      exit 127
+    fi
+    # Flat apt repository: no pool/ layout and Filename: is relative to this
+    # directory (spec non-goal: no dists/ hierarchy for one package). The
+    # family subdirectory is rebuilt from scratch, like every family.
+    rm -rf "$site/deb"
+    mkdir -p "$site/deb"
+    cp "$dist/$pkg" "$site/deb/.pkg.tmp"
+    mv "$site/deb/.pkg.tmp" "$site/deb/$pkg"
+    (
+      cd "$site/deb"
+      dpkg-scanpackages --multivalue . >Packages
+      gzip -9 -c Packages >Packages.gz
+      apt-ftparchive \
+        -o APT::FTPArchive::Release::Origin=opensst \
+        -o APT::FTPArchive::Release::Label=opensst \
+        -o APT::FTPArchive::Release::Suite=stable \
+        release . >Release
+    )
     ;;
   rpm)
     printf 'site-build: createrepo_c not found; install createrepo-c\n' >&2

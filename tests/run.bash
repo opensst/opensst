@@ -1610,6 +1610,52 @@ test_site_build_arch() {
     "re-run leaves the rpm directory untouched"
 }
 
+test_site_build_deb() {
+  if ! command -v dpkg-deb >/dev/null 2>&1 || ! command -v dpkg-scanpackages >/dev/null 2>&1 \
+    || ! command -v apt-ftparchive >/dev/null 2>&1; then
+    printf '# skip site build deb test: dpkg-deb/dpkg-scanpackages/apt-ftparchive is unavailable\n'
+    return
+  fi
+  local version sb dist site pkg listing listing2 packages expected_sha
+  version=$(sed -n "s/^SST_VERSION='\([0-9.]*\)'$/\1/p" "$SST" | head -n 1)
+  sb="$ROOT/packaging/site-build.sh"
+  dist="$TMP/site-deb-dist"
+  site="$TMP/site-deb"
+  mkdir -p "$dist" "$site"
+  "$ROOT/packaging/build-deb.sh" "$version" "$dist" >"$TMP/stdout" 2>"$TMP/stderr"
+  STATUS=$?
+  assert_eq "$STATUS" 0 "site build deb builds a real deb"
+  pkg="opensst_${version}_all.deb"
+
+  run_capture "$sb" deb "$version" "$dist" "$site"
+  assert_eq "$STATUS" 0 "site-build deb succeeds"
+
+  assert_file "$site/deb/$pkg" "site deb contains the package"
+  assert_file "$site/deb/Packages" "site deb contains Packages"
+  assert_file "$site/deb/Packages.gz" "site deb contains Packages.gz"
+  assert_file "$site/deb/Release" "site deb contains Release"
+  assert_file_contains "$site/deb/Packages" "Package: opensst" \
+    "site deb Packages names opensst"
+  assert_file_contains "$site/deb/Packages" "Filename: $pkg" \
+    "site deb Packages records the filename"
+  expected_sha=$(sha256sum "$site/deb/$pkg" | cut -d' ' -f1)
+  assert_file_contains "$site/deb/Packages" "$expected_sha" \
+    "site deb Packages records the package SHA-256"
+  assert_eq "$(gzip -dc "$site/deb/Packages.gz")" "$(cat "$site/deb/Packages")" \
+    "site deb Packages.gz gunzips to the same content"
+  assert_file_contains "$site/deb/Release" "Origin:" "site deb Release records Origin"
+  assert_file_contains "$site/deb/Release" "Suite:" "site deb Release records Suite"
+
+  listing=$(ls -A "$site/deb" | LC_ALL=C sort)
+  packages=$(cat "$site/deb/Packages")
+  run_capture "$sb" deb "$version" "$dist" "$site"
+  assert_eq "$STATUS" 0 "site-build deb re-run succeeds"
+  listing2=$(ls -A "$site/deb" | LC_ALL=C sort)
+  assert_eq "$listing2" "$listing" "site deb re-run leaves the same file set"
+  assert_eq "$(cat "$site/deb/Packages")" "$packages" \
+    "site deb re-run regenerates the same Packages"
+}
+
 test_help
 test_version
 test_version_helpers
@@ -1642,6 +1688,7 @@ test_release_workflow
 test_ci_workflow
 test_site_build_validation
 test_site_build_arch
+test_site_build_deb
 
 test_documentation() {
   local readme="$ROOT/README.md" agents="$ROOT/AGENTS.md" license="$ROOT/LICENSE"
