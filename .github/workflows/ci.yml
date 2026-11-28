@@ -89,7 +89,7 @@ jobs:
               && cd /repo && packaging/site-build.sh '$VERSION' rpm /repo/dist /site \
               && dnf --repofrompath=opensst,file:///site/rpm --setopt=opensst.gpgcheck=0 install -y opensst 2>/site/dnf-err.log \
               && sst --version | grep -Fx 'sst $VERSION'"
-          if grep -Eq '^Warning' "$PWD/site/dnf-err.log"; then
+          if grep -Eq '^[Ww]arning' "$PWD/site/dnf-err.log"; then
             echo '::error::dnf emitted warnings (no-warning guarantee violated)' >&2
             cat "$PWD/site/dnf-err.log" >&2
             exit 1

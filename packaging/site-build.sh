@@ -89,7 +89,7 @@ case $family in
     mv "$site/deb/.pkg.tmp" "$site/deb/$pkg"
     (
       cd "$site/deb"
-      dpkg-scanpackages --multivalue . >Packages
+      dpkg-scanpackages . >Packages
       gzip -9 -c Packages >Packages.gz
       apt-ftparchive \
         -o APT::FTPArchive::Release::Origin=opensst \

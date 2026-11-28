@@ -31,9 +31,9 @@ Makefile                 Test, check, install, uninstall, package targets
 make check                              # syntax checks + tests
 make install PREFIX=/usr/local          # source install
 make uninstall PREFIX=/usr/local        # source uninstall
-make package-deb VERSION=0.2.1          # build dist/opensst_0.2.1_all.deb
-make package-rpm VERSION=0.2.1          # build dist/opensst-0.2.1-1.noarch.rpm
-make package-arch VERSION=0.2.1         # build dist/opensst-0.2.1-1-any.pkg.tar.zst
+make package-deb VERSION=0.3.0          # build dist/opensst_0.3.0_all.deb
+make package-rpm VERSION=0.3.0          # build dist/opensst-0.3.0-1.noarch.rpm
+make package-arch VERSION=0.3.0         # build dist/opensst-0.3.0-1-any.pkg.tar.zst
 bash tests/run.bash                     # tests only
 ```
 

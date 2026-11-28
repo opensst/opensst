@@ -1460,6 +1460,8 @@ test_ci_workflow() {
   assert_file_contains "$ci" "package-arch" "CI builds an Arch package"
   assert_file_contains "$ci" "archlinux:latest" "CI uses an Arch container"
   assert_file_contains "$ci" "pacman -U" "CI smoke-tests the Arch package"
+  assert_file_contains "$ci" "^[Ww]arning" \
+    "dnf consumption smoke rejects case-variant warnings"
   assert_file_contains "$ROOT/Makefile" "bash -n install.sh" \
     "make check syntax-checks install.sh"
 }
@@ -1616,7 +1618,7 @@ test_site_build_deb() {
     printf '# skip site build deb test: dpkg-deb/dpkg-scanpackages/apt-ftparchive is unavailable\n'
     return
   fi
-  local version sb dist site pkg listing listing2 packages expected_sha
+  local version sb dist site pkg listing listing2 packages expected_sha filename_line
   version=$(sed -n "s/^SST_VERSION='\([0-9.]*\)'$/\1/p" "$SST" | head -n 1)
   sb="$ROOT/packaging/site-build.sh"
   dist="$TMP/site-deb-dist"
@@ -1636,8 +1638,11 @@ test_site_build_deb() {
   assert_file "$site/deb/Release" "site deb contains Release"
   assert_file_contains "$site/deb/Packages" "Package: opensst" \
     "site deb Packages names opensst"
-  assert_file_contains "$site/deb/Packages" "Filename: $pkg" \
-    "site deb Packages records the filename"
+  filename_line=$(grep -E '^Filename:' "$site/deb/Packages" | head -n1)
+  filename_line=${filename_line#Filename: }
+  filename_line=${filename_line#./}
+  assert_eq "$filename_line" "$pkg" \
+    "site deb Packages filename resolves to the package"
   expected_sha=$(sha256sum "$site/deb/$pkg" | cut -d' ' -f1)
   assert_file_contains "$site/deb/Packages" "$expected_sha" \
     "site deb Packages records the package SHA-256"
@@ -1818,9 +1823,20 @@ test_harness_filter() {
     "filtered run reports skipped tests"
 }
 
+test_site_build_invocations() {
+  local sb
+  sb="$ROOT/packaging/site-build.sh"
+  assert_file_contains "$sb" "dpkg-scanpackages . >Packages" \
+    "deb index uses a valid dpkg-scanpackages invocation"
+  assert_not_contains "$(cat "$sb")" "--multivalue" \
+    "deb index avoids the nonexistent multivalue option"
+}
+
 test_documentation() {
   local readme="$ROOT/README.md" agents="$ROOT/AGENTS.md" license="$ROOT/LICENSE"
   local needle
+  local version
+  version=$(sed -n "s/^SST_VERSION='\([0-9.]*\)'$/\1/p" "$SST" | head -n 1)
   for needle in \
     'sst open [ssh options] <host> <project>' \
     'sst list [ssh options] <host>' \
@@ -1861,9 +1877,15 @@ test_documentation() {
   for needle in 'MIT License' '2026' 'duanhongyi'; do
     assert_file_contains "$license" "$needle" "LICENSE contains '$needle'"
   done
+
+  assert_file_contains "$ROOT/Makefile" "VERSION ?= $version" \
+    "Makefile default version matches SST_VERSION"
+  assert_file_contains "$agents" "make package-deb VERSION=$version" \
+    "AGENTS documents the current package-deb example"
 }
 
 run_test test_documentation
+run_test test_site_build_invocations
 run_test test_harness_filter
 
 printf '\n%d tests, %d failures\n' "$tests" "$failures"
